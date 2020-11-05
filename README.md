@@ -1,6 +1,12 @@
-# Nanopype
+# Nanopype Mutation Analysis for Continuous Evolution
 
 [![Latest GitHub release](https://img.shields.io/github/release/giesselmann/nanopype.svg)](https://github.com/giesselmann/nanopype/releases/latest) [![Build Status](https://travis-ci.org/giesselmann/nanopype.svg?branch=master)](https://travis-ci.org/giesselmann/nanopype) [![Read the Docs (version)](https://img.shields.io/readthedocs/nanopype/latest.svg)](https://nanopype.readthedocs.io/en/latest/)
+
+## nanoMACE, a nanopype fork
+
+This is a fork of the snakemake-based analysis pipeline Nanopype, with a focus on analysis
+of mutation-rich targeted sequencing data derived from continuous directed evolution
+experiments.
 
 ## Documentation
 
@@ -20,5 +26,3 @@ Recurring steps of the nanopore data analysis are covered under **[workflow](htt
 The **modules** part covers an in depth description of all available tools and workflows together with their respective configuration options. This section is the main reference of the pipeline.
 
 Finally for new users the **[tutorial](https://nanopype.readthedocs.io/en/latest/examples/intro/)** might be helpful to learn the general concepts and usage of the pipeline. To complete the tutorial the test reads included in the package are sufficient and no separate wet-lab experiemnt is required.
-
-edit
