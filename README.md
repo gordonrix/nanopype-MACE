@@ -6,7 +6,7 @@
 
 This is a fork of the snakemake-based analysis pipeline Nanopype, with a focus on analysis
 of mutation-rich targeted nanopore sequencing data derived from continuous directed evolution
-experiments.
+experiments
 
 ## Documentation
 
