@@ -5,7 +5,7 @@
 ## nanoMACE, a nanopype fork
 
 This is a fork of the snakemake-based analysis pipeline Nanopype, with a focus on analysis
-of mutation-rich targeted sequencing data derived from continuous directed evolution
+of mutation-rich targeted nanopore sequencing data derived from continuous directed evolution
 experiments.
 
 ## Documentation
