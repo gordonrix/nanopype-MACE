@@ -40,12 +40,16 @@ from datetime import datetime
 from snakemake.utils import min_version
 
 
+
 start_time = datetime.now()
 
+# rule all:
+#     input:
+#         ['sequences/guppy/
 
 # snakemake config
 min_version("5.5.2")
-configfile: "nanopype.yaml"
+configfile: "config.yaml"
 
 
 # filter output depending on run mode
@@ -112,23 +116,30 @@ with open(os.path.join(os.path.dirname(workflow.snakefile), "env.yaml"), 'r') as
 
 
 # verify given references
-if not 'references' in config:
-    config['references'] = {}
-if 'references' in nanopype_env:
-    for name, values in nanopype_env['references'].items():
-        genome = values['genome']
-        chr_sizes = values['chr_sizes'] if 'chr_sizes' in values else ''
-        if not os.path.isfile(genome):
-            print_("[WARNING] Genome for {name} not found in {genome}, skipping entry.".format(
-                name=name, genome=genome), file=sys.stderr)
-            continue
-        if chr_sizes and not os.path.isfile(chr_sizes):
-            print_("[WARNING] Chromosome sizes for {name} not found in {chr_sizes}, skipping entry.".format(
-                name=name, chr_sizes=chr_sizes), file=sys.stderr)
-            continue
-        config['references'][name] = {"genome":genome, "chr_sizes":chr_sizes}
-else:
-    print_("[WARNING] No references in env.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
+for tag in config['runs']:
+    if config['runs'][tag]['reference']:
+        if not os.path.isfile(config['runs'][tag]['reference']):
+            print_(f'[WARNING] Reference .fasta file for {refName} (given path: {config[refName]}) not found.', file=sys.stderr)
+    else:
+        print_(f"[WARNING] No reference .fasta file provided for {tag} in config.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
+
+# if not 'references' in config:
+#     config['references'] = {}
+# if 'references' in nanopype_env:
+#     for name, values in nanopype_env['references'].items():
+#         genome = values['genome']
+#         chr_sizes = values['chr_sizes'] if 'chr_sizes' in values else ''
+#         if not os.path.isfile(genome):
+#             print_("[WARNING] Genome for {name} not found in {genome}, skipping entry.".format(
+#                 name=name, genome=genome), file=sys.stderr)
+#             continue
+#         if chr_sizes and not os.path.isfile(chr_sizes):
+#             print_("[WARNING] Chromosome sizes for {name} not found in {chr_sizes}, skipping entry.".format(
+#                 name=name, chr_sizes=chr_sizes), file=sys.stderr)
+#             continue
+#         config['references'][name] = {"genome":genome, "chr_sizes":chr_sizes}
+# else:
+#     print_("[WARNING] No references in env.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
 
 
 # verify given binaries
@@ -243,26 +254,32 @@ else:
 	config['bin_singularity']['python'] = sys.executable
 
 
-# names for multi-run rules
+# # names for multi-run rules
 runnames = []
-if os.path.isfile('runnames.txt'):
-    runnames = [line.rstrip() for line in open('runnames.txt') if line.rstrip() and not line.startswith('#')]
-config['runnames'] = runnames
+config['runnames'] = [config['runs'][tag]['runname'] for tag in config['runs']]
 
 
 # check raw data archive
 if not os.path.exists(config['storage_data_raw']):
     raise RuntimeError("[ERROR] Raw data archive not found.")
 else:
-    config['storage_data_raw'] = config['storage_data_raw'].rstrip('/')
-    for runname in config['runnames']:
-        loc = os.path.join(config['storage_data_raw'], runname)
-        if not os.path.exists(loc):
-            print_("[WARNING] {runname} not found at {loc} and is not available in the workflow.".format(
-                runname=runname, loc=loc), file=sys.stderr)
-        elif not os.path.exists(os.path.join(loc, 'reads')) or not os.listdir(os.path.join(loc, 'reads')):
-            print_("[WARNING] {runname} configured but with missing/empty reads directory.".format(
-                runname=runname), file=sys.stderr)
+    if config['input_type'] == 'raw':
+        config['storage_data_raw'] = config['storage_data_raw'].rstrip('/')
+        for tag in config['runs']:
+            loc = os.path.join(config['storage_data_raw'], config['runs'][tag]['runname'])
+            if not os.path.exists(loc):
+                print_("[WARNING] {runname} not found at {loc} and is not available in the workflow.".format(
+                    runname=runname, loc=loc), file=sys.stderr)
+            elif not os.path.exists(os.path.join(loc, 'reads')) or not os.listdir(os.path.join(loc, 'reads')):
+                print_("[WARNING] {runname} configured but with missing/empty reads directory.".format(
+                    runname=runname), file=sys.stderr)
+    elif config['input_type'] == 'base_called':
+        for runname in config['runs']:
+            loc = os.path.join('sequences', config['runs'][runname]['fastq.gz'])
+            if not os.path.exists(loc):
+                print_("[WARNING] {runname} sequences file {loc} not found and is not available in the workflow.".format(
+                    runname=runname, loc=loc), file=sys.stderr)
+
 
 
 # mount raw storage and references if using singularity
@@ -302,8 +319,7 @@ if os.path.isfile('roi.yaml'):
         roi = roi_map
 config['roi'] = roi
 
-
-# include modules
+# # include modules
 include : "rules/storage.smk"
 include : "rules/basecalling.smk"
 include : "rules/alignment.smk"
@@ -314,10 +330,6 @@ include : "rules/transcript.smk"
 include : "rules/clean.smk"
 include : "rules/asm.smk"
 include : "rules/report.smk"
-
-
-
-
 
 # error and success handler
 def print_log(status='SUCCESS'):

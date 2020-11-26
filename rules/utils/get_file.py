@@ -83,11 +83,10 @@ def get_signal_batch(wildcards, config):
 
 # get available batch sequence
 def get_sequence_batch(wildcards, config):
-    base = "sequences/{sequence_workflow}/batches/{tag}/{runname}/{batch}".format(
-            sequence_workflow=wildcards.sequence_workflow,
-            tag=wildcards.tag,
-            runname=wildcards.runname,
-            batch=wildcards.batch)
+    base = "sequences/batches/{tag}/{runname}/{batch}".format(
+                tag=wildcards.tag,
+                runname=config['runs'][wildcards.tag]['runname'],
+                batch=wildcards.batch)
     return base + '.fastq.gz'
 
 

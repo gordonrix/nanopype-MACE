@@ -37,69 +37,65 @@ import os, sys, site
 rule default:
     shell : ""
 
-rule demux:
-    input:
-        "bin/deepbinner"
+# rule demux:
+#     input:
+#         "bin/deepbinner"
 
-rule basecalling:
-    input:
-        "bin/guppy_basecaller",
-        "bin/flappie",
+# rule basecalling:
+#     input:
+#         "bin/guppy_basecaller",
+#         "bin/flappie",
 
-rule alignment:
-    input:
-        "bin/minimap2",
-        "bin/graphmap2",
-        "bin/ngmlr",
-        "bin/samtools",
-        "bin/bedtools",
-        "bin/bedGraphToBigWig"
+# rule alignment:
+#     input:
+#         "bin/minimap2",
+#         "bin/graphmap2",
+#         "bin/ngmlr",
+#         "bin/samtools",
+#         "bin/bedtools",
+#         "bin/bedGraphToBigWig"
 
-rule methylation:
-    input:
-        "bin/nanopolish",
-        "bin/samtools",
-        "bin/bedtools",
-        "bin/bedGraphToBigWig"
+# rule methylation:
+#     input:
+#         "bin/nanopolish",
+#         "bin/samtools",
+#         "bin/bedtools",
+#         "bin/bedGraphToBigWig"
 
-rule assembly:
-    input:
-        "bin/minimap2",
-        "bin/samtools",
-        "bin/flye",
-        "bin/wtdbg2"
+# rule assembly:
+#     input:
+#         "bin/minimap2",
+#         "bin/samtools",
+#         "bin/flye",
+#         "bin/wtdbg2"
 
-rule sv:
-    input:
-        "bin/sniffles",
-        "bin/svim"
+# rule sv:
+#     input:
+#         "bin/sniffles",
+#         "bin/svim"
 
-rule transcript_core:
-    input:
-        "bin/minimap2",
-        "bin/samtools",
-        "bin/racon",
-        "bin/cluster_gff",
-        "bin/collapse_partials",
-        "bin/polish_clusters",
-        "bin/spliced_bam2gff"
+# rule transcript_core:
+#     input:
+#         "bin/minimap2",
+#         "bin/samtools",
+#         "bin/racon",
+#         "bin/cluster_gff",
+#         "bin/collapse_partials",
+#         "bin/polish_clusters",
+#         "bin/spliced_bam2gff"
 
-rule transcript:
-    input:
-        rules.transcript_core.input,
-        "bin/cdna_classifier.py"
+# rule transcript:
+#     input:
+#         rules.transcript_core.input,
+#         "bin/cdna_classifier.py"
 
 rule all:
     input:
-        rules.demux.input,
-        rules.basecalling.input,
-        rules.alignment.input,
-        rules.methylation.input,
-        rules.sv.input,
-        rules.transcript.input,
-        rules.assembly.input
-
-
+        "bin/deepbinner",
+        "bin/guppy_basecaller",
+        "bin/minimap2",
+        "bin/samtools",
+        "bin/nanopolish"
 
 
 # helper functions
