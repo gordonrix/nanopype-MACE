@@ -15,187 +15,415 @@ import re
 import shutil
 import time
 import gzip
+import itertools
 
 import numpy as np
+import pandas as pd
 import pysam
-from Bio import Align, pairwise2
+from Bio import Align, pairwise2, Seq
 from Bio.pairwise2 import format_alignment
-from Bio.Seq import Seq
 from Bio import SeqIO
 
 ### Asign variables from config file
 config = snakemake.config
 tag = snakemake.wildcards.tag
-# if 'demux_terminal_fasta' in config:
-#     term_bc_fasta = config['demux_terminal_fasta']
-# if 'demux_internal_fasta' in config:
-#     internal_bc_fasta = config['demux_internal_fasta']
-# runname = snakemake.wildcards.runname
-# term_bc_pairs = config['runs'][runname]['barcodePairs']
 BAMin = str(snakemake.input.alignment)
-samfile = pysam.AlignmentFile(BAMin, 'rb')
 
-refSeqfasta = str(snakemake.input.reference)
-refSeqsList = list(SeqIO.parse(refSeqfasta, 'fasta'))
-refDict = SeqIO.to_dict(SeqIO.parse(refSeqfasta, 'fasta'))
+refSeqfasta = config['runs'][tag]['reference']
+ref = list(SeqIO.parse(refSeqfasta, 'fasta'))[0]
+barcodeInfo = config['runs'][tag]['barcodeInfo']
+barcodeGroups = config['runs'][tag]['barcodeGroups']
 
-###
+### Output variables
+outputDir = 'demux'
 
-# function that creates a dictionary of barcodes from a fasta
-#   barcodes must be in the form: >barcodeName
-#                                 NNNNNNNN
-#   function will then create a dictionary of these barcodes in the form NNNNNNNN: barcodeName
-def createBarcodesDict(bcFASTA):
-    bcDict = {}
-    for entry in SeqIO.parse(bcFASTA, 'fasta'):
-        bcName = entry.id
-        bc = str(entry.seq)
-        bcDict[bc]=bcName
-    return bcDict
 
-def aligned_reference(CIGAR_tuples, reference):
-    """given a CIGAR tuple from pysam.AlignmentFile entry and a reference sequence as a string,
-    this function will build the reference alignment string with indels accounted for"""
-    index = 0
-    string = ''
-    for cTuple in CIGAR_tuples:
-        if cTuple[0] == 0: #match
-            string += reference[index:index+cTuple[1]]
-            index += cTuple[1]
-        elif cTuple[0] == 1: #insertion
-            string += '-'*cTuple[1]
-        elif cTuple[0]: #deletion
-            index += cTuple[1]
-    return string
+class BarcodeParser:
 
-def find_barcode_context(sequence, context):
-    """given a sequence with barcode locations marked as Ns, and a barcode sequence context (e.g. ATCGNNNNCCGA),
-    this function will identify the beginning and end of the Ns within the appropriate context if it exists only once.
-    If the context does not exist or if the context appears more than once, then will return None as the first output
-    value, and the reason why the barcode identification failed as the second value"""
+    def __init__(self, runsConfig, tag):
+        """
+        arguments:
 
-    location = sequence.find(context)
-    if location == -1:
-        return None, 'barcode context not present in reference sequence'
-    N_start = location + context.find('N')
-    N_end = location + len(context) - context[::-1].find('N')
+        runsConfig      - snakemake config dictionary for all runs
+        tag             - tag for which all BAM files will be demultiplexed, defined in config file
+        """
+        self.tag = tag
+        self.refSeqfasta = runsConfig[tag]['reference']
+        self.reference = list(SeqIO.parse(self.refSeqfasta, 'fasta'))[0]
+        self.barcodeInfo = runsConfig[tag]['barcodeInfo']
+        self.barcodeGroups = runsConfig[tag]['barcodeGroups']
 
-    if sequence[N_end:].find(context) == -1:
-        return N_start, N_end
-    else:
-        return None, 'barcode context appears in reference more than once'
+    @staticmethod
+    def create_barcodes_dict(bcFASTA, revComp):
+        """
+        creates a dictionary of barcodes from fasta file
+        barcodes in fasta must be in fasta form: >barcodeName
+                                                  NNNNNNNN
+        function will then create a dictionary of these barcodes in the form {NNNNNNNN: barcodeName}
+        
+        inputs:
+            bcFASTA:    string, file name of barcode fasta file used for reference
+            revComp:    bool, if set to True, barcode sequences will be stored as reverse complements of the sequences in the fasta file
+        """
+        bcDict = {}
+        for entry in SeqIO.parse(bcFASTA, 'fasta'):
+            bcName = entry.id
+            bc = str(entry.seq).upper()
+            if revComp:
+                bc = Seq.reverse_complement(bc)
+            bcDict[bc]=bcName
+        return bcDict
 
-def sortByBarcodes(pairedRecords, bcDict):
-    """given a list of pairs of fastq records (pairedRecords) and a barcode dictionary generated
-    from the createBarcodesDict function (bcIn), this script will identify the pair
-    of barcodes present at the beginning and end of each sequence in the fastq file
-    and sort them into appropriately named files. If a name from the snakemake config
-    file is assigned to the particular barcode pair that is identified, then that
-    name will be used to name the file. If not, then the barcode names will be used
-    to name the file. Sequences for which barcodes present in the bcFASTA file are
-    not present at the sequence termini will be sorted into an 'unsorted' file."""
+    @staticmethod
+    def find_barcode_context(sequence, context):
+        """given a sequence with barcode locations marked as Ns, and a barcode sequence context (e.g. ATCGNNNNCCGA),
+        this function will identify the beginning and end of the Ns within the appropriate context if it exists only once.
+        If the context does not exist or if the context appears more than once, then will return None as the first output
+        value, and the reason why the barcode identification failed as the second value"""
 
-    # get length of barcode from barcodeDict
-    for key in bcDict:
-        bcLen = len(key)
-        break
+        location = sequence.find(context)
+        if location == -1:
+            return None, 'barcode context not present in reference sequence'
+        N_start = location + context.find('N')
+        N_end = location + len(context) - context[::-1].find('N')
 
-    # dictionary that will be populated with barcode pairs (or 'unsorted') as keys,
-    #   and a pair of lists of fwd and rvs fastq records as values
-    sortedbybarcodesDict = {'unsorted':([],[])}
-
-    for fwd, rvs in pairedRecords:
-        # assign sequence to Bio seq variable, forward and reverse barcodes to separate variables as strings
-        fwdbc = str(fwd.seq[:bcLen])
-        rvsbc = str(rvs.seq[:bcLen])
-
-        # find name of barcode, move on to next sequence if either barcode is not in bcDict
-        try:
-            fwdbcName = bcDict[fwdbc]
-            rvsbcName = bcDict[rvsbc]
-        except:
-            sortedbybarcodesDict['unsorted'][0].append(fwd)
-            sortedbybarcodesDict['unsorted'][1].append(rvs)
-            continue
-        if (fwdbcName, rvsbcName) in sortedbybarcodesDict:
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][0].append(fwd)
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][1].append(rvs)
+        if sequence[N_end:].find(context) == -1:
+            return N_start, N_end
         else:
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)] = [[],[]]
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][0] = [fwd]
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][1] = [rvs]
+            return None, 'barcode context appears in reference more than once'
 
-    return sortedbybarcodesDict
+    def add_barcode_contexts(self):
+        """
+        adds dictionary of context strings for each type of barcode provided
+        if no context is specified for a barcode type or
+        if context cannot be found in the reference sequence, throws an error
+        """
+        dictOfContexts = {}
+        for bcType in self.barcodeInfo:
+            try:
+                dictOfContexts[bcType] = self.barcodeInfo[bcType]['context']
+                if str(self.reference.seq).find(dictOfContexts[bcType]) == -1:
+                    raise ValueError
+            except KeyError:
+                raise ValueError(f'Barcode type not assigned a sequence context. Add context to barcode type or remove barcode type from barcodeInfo for this tag.\n\nRun tag: `{self.tag}`\nbarcode type: `{bcType}`\nreference sequence: `{self.reference.id}`\nreference sequence fasta file: `{self.refSeqfasta}`')
+            except ValueError:
+                raise ValueError(f'Barcode context not found in reference sequence. Modify context or reference sequence to ensure an exact match is present.\n\nRun tag: `{self.tag}`\nbarcode type: `{bcType}`\nbarcode sequence context: `{dictOfContexts[bcType]}`\nreference sequence: `{self.reference.id}`\nreference sequence fasta file: `{self.refSeqfasta}`')
+        self.barcodeContexts = dictOfContexts
 
-def sortByBarcodes(BAMs, bcDict):
-    """given a list of BAM file entries (pairedRecords) a barcode dictionary generated
-    from the createBarcodesDict function (bcDict), and the 'barcodeInfo' subdictionary
-    for the relevant tag from the config file, this script will identify the barcode(s)
-    in each sequence and sort them into a nested dictionary, where global keys are the
-    terminal barcode(s), values of keys are the name of the internal barcode, and
-    values of values of keys are the BAM file entries belonging to that barcode
-    combination in the form:
+    def add_barcode_dicts(self):
+        """
+        adds dictionary for each type of barcodes using create_barcodes_dict()
+        if no .fasta file is specified for a barcode type, or if the provided fasta file
+        cannot be found, throws an error
+        """
+        dictOfDicts = {}
+        for bcType in self.barcodeInfo:
+            try:
+                fastaFile = self.barcodeInfo[bcType]['fasta']
+                if self.barcodeInfo[bcType]['reverseComplement']:
+                    RC = True
+                else:
+                    RC = False
+                dictOfDicts[bcType] = self.create_barcodes_dict(fastaFile, RC)
+            except KeyError:
+                raise ValueError(f'barcode type not assigned a fasta file. Add fasta file to barcode type or remove barcode type from barcodeInfo for this tag.\n\nRun tag: `{self.tag}`\nbarcode type: `{bcType}`\nreference sequence: `{self.reference.id}`')
+            except FileNotFoundError:
+                fastaFile = self.barcodeInfo[bcType]['fasta']
+                raise FileNotFoundError(f'barcode fasta file not found.\n\nRun tag: `{self.tag}`\nbarcode type: `{bcType}`\nreference sequence: `{self.reference.id}`\nfasta file: `{fastaFile}`')
+        self.barcodeDicts = dictOfDicts
 
-    {fwdbcName, rvsbcName):{terminalbcName:BAM file entry}}
+    @staticmethod
+    def hamming_distance(string1, string2):
+        """calculates hamming distance, taken from https://stackoverflow.com/questions/54172831/hamming-distance-between-two-strings-in-python"""
+        return sum(c1 != c2 for c1, c2 in zip(string1.upper(), string2.upper()))
 
-    if a particular barcode is not specified in the config file, it is set to None.
-    if a particular barcode is specified but cannot be identified according to the
-    provided barcodes, it is set to 'notFound'
-    """
+    def add_barcode_hamming_distance(self):
+        """adds barcode hamming distance for each type of barcode (default value = 0), and ensures that
+        (1) hamming distances of all possible pairs of barcodes within the fasta file of each barcode
+        type are greater than the set hamming distance and (2) that each barcode is the same length as
+        the length of Ns in the provided sequence context"""
+        hammingDistanceDict = {}
+        for barcodeType in self.barcodeDicts:
+            if 'hammingDistance' in self.barcodeInfo[barcodeType]:
+                hammingDistanceDict[barcodeType] = self.barcodeInfo[barcodeType]['hammingDistance']
+            else:
+                hammingDistanceDict[barcodeType] = 0 #default Hamming distance of 0
+            barcodes = [bc for bc in self.barcodeDicts[barcodeType]]
+            barcodeLength = self.barcodeContexts[barcodeType].count('N')
+            for i,bc in enumerate(barcodes):
+                try: # check that barcode is not repeated
+                    assert barcodes.count(bc) == 1
+                except AssertionError:
+                    raise AssertionError(f'Barcode {bc} present more than once in {self.barcodeInfo[barcodeType]["fasta"]} Duplicate barcodes are not allowed.')
+                try: # check that barcode is of the correct length
+                    assert len(bc) == barcodeLength
+                except AssertionError:
+                    raise AssertionError(f'Barcode {bc} is longer than the expected length of {barcodeLength} based on {self.barcodeContexts[barcodeType]}')
+                try: # check that barcode is above the specified hamming distance away from all other barcodes
+                    otherBCs = barcodes[:i]+barcodes[i+1:]
+                    for otherBC in otherBCs:
+                        hamDist = self.hamming_distance(bc, otherBC)
+                        assert hamDist > hammingDistanceDict[barcodeType]
+                except AssertionError:
+                    raise AssertionError(f'Barcode {bc} is within hammingDistance {hamDist} of barcode {otherBC}')
+        self.hammingDistances = hammingDistanceDict
 
-    # dictionary that will be populated with barcode pairs (or 'unsorted') as keys,
-    #   and a pair of lists of fwd and rvs fastq records as values
-    sortedbybarcodesDict = {'unsorted':([],[])}
+    @staticmethod
+    def hamming_distance_dict(sequence, hamming_distance):
+        """given a sequence as a string (sequence) and a desired hamming distance,
+        finds all sequences that are at or below the specified hamming distance away
+        from the sequence and returns a dictionary where values are the given sequence
+        and keys are every sequence whose hamming distance from `sequence` is less
+        than or equal to `hamming_distance`"""
+        
+        hammingDistanceSequences = [[sequence]] # list to be populated with lists of sequences that are the index hamming distance from the first sequence
 
-    for fwd, rvs in pairedRecords:
-        # assign sequence to Bio seq variable, forward and reverse barcodes to separate variables as strings
-        fwdbc = str(fwd.seq[:bcLen])
-        rvsbc = str(rvs.seq[:bcLen])
+        for hd in range(0, hamming_distance):
+            new_seqs = []
+            for seq in hammingDistanceSequences[hd]:
+                for i, a in enumerate(seq):
+                    if a != sequence[i]: continue
+                    for nt in list('ATGC'):
+                        if nt == a: continue
+                        else: new_seqs.append(seq[:i]+nt+seq[i+1:])
+            hammingDistanceSequences.append(new_seqs)
 
-        # find name of barcode, move on to next sequence if either barcode is not in bcDict
-        try:
-            fwdbcName = bcDict[fwdbc]
-            rvsbcName = bcDict[rvsbc]
-        except:
-            sortedbybarcodesDict['unsorted'][0].append(fwd)
-            sortedbybarcodesDict['unsorted'][1].append(rvs)
-            continue
-        if (fwdbcName, rvsbcName) in sortedbybarcodesDict:
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][0].append(fwd)
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][1].append(rvs)
+        allHDseqs = list(itertools.chain.from_iterable(hammingDistanceSequences)) # combine all sequences into a single list
+
+        outDict = {}
+        for seq in allHDseqs:
+            outDict[seq] = sequence
+
+        return outDict
+
+    def add_hamming_distance_barcode_dict(self):
+        """Adds a second barcode dictionary based upon hamming distance. For each barcode type, if the
+        hamming distance is >0, adds a dictionary where values are barcodes defined in the barcode fasta file,
+        and keys are all sequences of the same length with hamming distance from each specific barcode less than
+        or equal to the specified hamming distance for that barcode type. Only utilized when a barcode cannot
+        be found in the provided barcode fasta file and hamming distance for the barcode type is >0"""
+        hammingDistanceBarcodeLookup = {}
+        for barcodeType in self.hammingDistances:
+            hamDist = self.hammingDistances[barcodeType]
+            if hamDist > 0:
+                barcodeTypeHDdict = {}
+                for barcode in self.barcodeDicts[barcodeType]:
+                    barcodeTypeHDdict.update(self.hamming_distance_dict(barcode,hamDist))
+                hammingDistanceBarcodeLookup[barcodeType] = barcodeTypeHDdict
+        self.hammingDistanceBarcodeDict = hammingDistanceBarcodeLookup
+
+    @staticmethod
+    def find_N_start_end(sequence, context):
+        """given a sequence with barcode locations marked as Ns, and a barcode sequence context (e.g. ATCGNNNNCCGA),
+        this function will return the beginning and end of the Ns within the appropriate context if it exists only once.
+        If the context does not exist or if the context appears more than once, then will return None, None"""
+
+        location = sequence.find(context)
+        if location == -1:
+            self.failureReason = 'context_not_present_in_reference_sequence'
+            return None, None
+        N_start = location + context.find('N')
+        N_end = location + len(context) - context[::-1].find('N')
+
+        if sequence[N_end:].find(context) == -1:
+            return N_start, N_end
         else:
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)] = [[],[]]
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][0] = [fwd]
-            sortedbybarcodesDict[(fwdbcName, rvsbcName)][1] = [rvs]
+            self.failureReason = 'context_appears_in_reference_more_than_once'
+            return None, None
 
-    return sortedbybarcodesDict
+    def align_reference(self, BAMentry):
+        """given a pysam.AlignmentFile BAM entry,
+        builds the reference alignment string with indels accounted for"""
+        index = 0
+        refAln = ''
+        for cTuple in BAMentry.cigartuples:
+            if cTuple[0] == 0: #match
+                refAln += self.reference.seq[index:index+cTuple[1]]
+                index += cTuple[1]
+            elif cTuple[0] == 1: #insertion
+                refAln += '-'*cTuple[1]
+            elif cTuple[0]: #deletion
+                index += cTuple[1]
+        return refAln
+
+    def add_group_barcode_type(self):
+        """adds a list of the barcodeTypes that are used for grouping, and a list of barcodeTypes that are not
+        used for grouping, and throws an error if there are different types of groups
+        defined within the barcodeGroups dictionary
+        
+        Example: if self.barcodeGroups = {'group1':{'fwd':'barcode1','rvs':'barcode2'},'group2':{'fwd':'barcode3','rvs':'barcode4'}},
+            will set self.barcodeGroupType as ['fwd', 'rvs']"""
+
+        groupedBarcodeTypes = []
+        ungroupedBarcodeTypes = []
+        
+        first = True
+        for group in self.barcodeGroups:
+            groupDict = self.barcodeGroups[group]
+            if first:
+                for barcodeType in barcodeInfo: # add barcode types in the order they appear in barcodeInfo
+                    if barcodeType in groupDict:
+                        groupedBarcodeTypes.append(barcodeType)
+                    else:
+                        ungroupedBarcodeTypes.append(barcodeType)
+                first = False
+                firstGroupDict = groupDict
+            else:
+                try: # ensure all barcode group types are the same
+                    assert(all([bcType in groupDict for bcType in firstGroupDict]))
+                    assert(all([bcType in firstGroupDict for bcType in groupDict]))
+                except AssertionError:
+                    raise AssertionError(f'All barcode groups do not use the same set of barcode types. Group {group} differs from group {firstGroup}')
+
+        self.groupedBarcodeTypes = groupedBarcodeTypes
+        self.ungroupedBarcodeTypes = ungroupedBarcodeTypes
+
+    def add_barcode_name_dict(self):
+        """adds the inverse of dictionary of barcodeGroups, where keys are tuples of
+        barcode names in the order specified in barcodeInfo, and values are group names, as defined in barcodeGroups.
+        used to name files that contain sequences containing specific barcode combinations"""
+
+        groupNameDict = {}
+
+        for group in self.barcodeGroups:
+            groupDict = self.barcodeGroups[group]
+            key = tuple()
+            for barcodeType in self.groupedBarcodeTypes:
+                if barcodeType in groupDict:
+                    key += tuple([groupDict[barcodeType]])
+            groupNameDict[key] = group
+
+        self.barcodeGroupNameDict = groupNameDict
+
+    def get_demux_output_prefix(self, sequenceBarcodesDict):
+        """given a dictionary of barcode names for a particular sequence, as specified in the barcodeInfo config dictionary,
+        uses the barcode group name dictionary `self.barcodeGroupNameDict` created by add_barcode_name_dict
+        to generate a file name prefix according to their group name if it can be identified, or will
+        produce a file name prefix simply corresponding to the barcodes if a group can't be identified.
+        Note that the separator is an n dash '–'.
+
+        examples:
+        
+        1)
+
+        if the order of barcodes in barcodeInfo is 'fwd','rvs','alt' and 
+        barcodeNamesDict == {'fwd':'one', 'rvs':'two', 'alt':'three'} and self.barcodeGroups == {'group1':{'fwd':'one','rvs':'two'}}:
+
+        self.get_demux_output_prefix(barcodeNamesList) will return 'group1–three'
+        
+
+        2)
+
+        if the order of barcodes in barcodeInfo is 'fwd','rvs','alt' and 
+        barcodeNamesList == ['one', 'two', 'three'] and self.barcodeGroups == {'group1':{'fwd':'two','rvs':'two'}}:
+
+        self.get_demux_output_prefix(barcodeNamesList) will return 'one–two–three'
+        """
+        # split barcodes into those utilized by groups and those not utilized by groups. Group tuple used as dictionary key to look up group name
+        ungroupSequenceBarcodes = []
+        groupBarcodes = tuple()
+
+        for barcodeType in sequenceBarcodesDict:
+            bc = sequenceBarcodesDict[barcodeType]
+            if barcodeType in self.groupedBarcodeTypes:
+                if bc == 'fail':
+                    return '–'.join(sequenceBarcodesDict.values())
+                groupBarcodes += tuple([bc])
+            else:
+                ungroupSequenceBarcodes.append(bc)
+
+        try:
+            groupName = self.barcodeGroupNameDict[groupBarcodes]
+            return '–'.join([groupName]+ungroupSequenceBarcodes)
+        except KeyError:
+            return '–'.join(sequenceBarcodesDict.values())
 
 
-def barcode_name_dict(barcodePairs):
-    """builds dictionary used to find the name assigned to a barcode pair, if it exists"""
-    outDict = {'unsorted':'unsorted'}
-    for name in barcodePairs:
-        bcPair = (barcodePairs[name]['fwdbc'], barcodePairs[name]['rvsbc'])
-        outDict[bcPair] = name
-    return outDict
 
-bcDict_fwd = createBarcodesDict(snakemake.input.fwdBCfasta)
-bcDict_rvs = createBarcodesDict(snakemake.input.rvsBCfasta)
-context_fwd = config['runs'][tag]['barcodeInfo']['fwdBC']['context']
-context_rvs = config['runs'][tag]['barcodeInfo']['rvsBC']['context']
-# if config['runs'][tag]['barcodeInfo']['rvsBC']['reverseComplement'] == True:
-    # context_rvs
-print(context_fwd, context_rvs)
+    def id_seq_barcodes(self, refAln, BAMentry):
+        """Inputs:
+            refAln:         aligned reference string from align_reference()
+            BAMentry:       pysam.AlignmentFile entry
+        
+        Returns a list of information for a provided `BAMentry` that will be used for demuxing
+        and will be added as a row for a demux stats DataFrame"""
+        
+        sequenceBarcodesDict = {}
+        outList = []
+        
+        for barcodeType in self.barcodeDicts:
 
-for reference in refDict:
-    for entry in samfile.fetch('first_TrpB'):
-        # print(entry)
-        refAln = aligned_reference(entry.cigartuples, refDict[reference].seq)
-        print(refAln)
-        fwdStart, fwdStop = barcode_position(refAln, context_fwd)
-        rvsStart, rvsStop = barcode_position(refAln, context_rvs)
-        print(fwdStart, fwdStop, rvsStart, rvsStop)
-        print(entry.query_alignment_sequence[fwdStart:fwdStop], entry.query_alignment_sequence[rvsStart:rvsStop])
+            self.failureReason = None
+            barcodeName = None
+            failureReason = {'context_not_present_in_reference_sequence':0, 'context_appears_in_reference_more_than_once':0, 'barcode_not_in_fasta':0}
+            start,stop = self.find_N_start_end(refAln, self.barcodeContexts[barcodeType])
+
+            try:
+                barcode = BAMentry.query_alignment_sequence[ start:stop ]
+            except TypeError:
+                barcodeName = 'fail'
+                failureReason[self.failureReason] = 1 # failure reason is set by self.find_N_start_end
+            
+            if barcodeName != 'fail':
+                try:
+                    barcodeName = self.barcodeDicts[barcodeType][barcode]
+                except KeyError:
+                    barcodeName = 'fail'
+                    failureReason['barcode_not_in_fasta'] += 1
+            
+            sequenceBarcodesDict[barcodeType] = barcodeName
+            outList += [barcodeName] + list(failureReason.values())
+
+        return self.get_demux_output_prefix(sequenceBarcodesDict), outList
+
+
+    def demux_BAM(self, BAMin, outputDir):
+
+
+        bamfile = pysam.AlignmentFile(BAMin, 'rb')
+        self.add_barcode_contexts()
+        self.add_barcode_dicts()
+        self.add_barcode_hamming_distance()
+        self.add_hamming_distance_barcode_dict()
+        self.add_group_barcode_type()
+        self.add_barcode_name_dict()
+
+        # dictionary where keys are file name prefixes indicating the barcodes and values are file objects corresponding to those prefixes
+            # file objects are only created if the specific barcode combination is seen
+        outFileDict = {}
+        
+        # columns names for dataframe to be generated from rows output by id_seq_barcodes
+        colNames = ['output_file_prefix']
+        for barcodeType in self.barcodeDicts:
+            colNames += [barcodeType, f'{barcodeType}_failed:context_not_present_in_reference_sequence', f'{barcodeType}_failed:context_appears_in_reference_more_than_once', f'{barcodeType}_failed:barcode_not_in_fasta']
+
+        rows = []
+
+        for BAMentry in bamfile:
+            refAln = self.align_reference(BAMentry)
+            outputPrefix, BAMentryBarcodeData = self.id_seq_barcodes(refAln, BAMentry)
+            try:
+                outFileDict[outputPrefix].write(BAMentry)
+            except KeyError:
+                fName = os.path.join(outputDir,f'{outputPrefix}_{self.tag}.bam')
+                outFileDict[outputPrefix] = pysam.AlignmentFile(fName, 'wb', template=bamfile)
+                outFileDict[outputPrefix].write(BAMentry)
+            rows.append([outputPrefix] + BAMentryBarcodeData)
+
+        for sortedBAM in outFileDict:
+            outFileDict[sortedBAM].close()
+
+        demuxStats = pd.DataFrame(rows, columns=colNames)
+
+        demuxStats.to_csv(os.path.join(outputDir, f'{self.tag}_demuxStats.csv'))
+
+
+def main():
+    bcp = BarcodeParser(config['runs'], tag)
+    bcp.demux_BAM(BAMin, outputDir)
+
+if __name__ == '__main__':
+    main()
 
 def write_sorted_fqs(sortedDict):
     """given output from the sortByBarcodes function, this will loop through all fastq lists
@@ -216,15 +444,3 @@ def write_sorted_fqs(sortedDict):
         with open(fwdFile, 'w') as fwdOut, open(rvsFile, 'w') as rvsOut:
             SeqIO.write(sortedDict[bcPair][0], fwdOut, 'fastq')
             SeqIO.write(sortedDict[bcPair][1], rvsOut, 'fastq')
-
-def main():
-    bcDict = createBarcodesDict(bcFASTA)
-    pairedRecords = []
-    for fwd, rvs in zip(SeqIO.parse(fwdFastq, 'fastq'), SeqIO.parse(rvsFastq, 'fastq')):
-        pairedRecords.append((fwd, rvs))
-    sortedDict = sortByBarcodes(pairedRecords, bcDict)
-    write_sorted_fqs(sortedDict)
-    return
-
-# if __name__ == '__main__':
-#     main()
