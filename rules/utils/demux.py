@@ -212,8 +212,7 @@ class BarcodeParser:
                 hammingDistanceBarcodeLookup[barcodeType] = barcodeTypeHDdict
         self.hammingDistanceBarcodeDict = hammingDistanceBarcodeLookup
 
-    @staticmethod
-    def find_N_start_end(sequence, context):
+    def find_N_start_end(self, sequence, context):
         """given a sequence with barcode locations marked as Ns, and a barcode sequence context (e.g. ATCGNNNNCCGA),
         this function will return the beginning and end of the Ns within the appropriate context if it exists only once.
         If the context does not exist or if the context appears more than once, then will return None, None"""
@@ -355,6 +354,7 @@ class BarcodeParser:
 
             self.failureReason = None
             barcodeName = None
+            notExactMatch = 0
             failureReason = {'context_not_present_in_reference_sequence':0, 'context_appears_in_reference_more_than_once':0, 'barcode_not_in_fasta':0}
             start,stop = self.find_N_start_end(refAln, self.barcodeContexts[barcodeType])
 
@@ -368,17 +368,25 @@ class BarcodeParser:
                 try:
                     barcodeName = self.barcodeDicts[barcodeType][barcode]
                 except KeyError:
-                    barcodeName = 'fail'
-                    failureReason['barcode_not_in_fasta'] += 1
+                    if barcodeType in self.hammingDistanceBarcodeDict:
+                        try:
+                            closestBarcode = self.hammingDistanceBarcodeDict[barcodeType][barcode]
+                            barcodeName = self.barcodeDicts[closestBarcode]
+                            notExactMatch = 1
+                        except KeyError:
+                            barcodeName = 'fail'
+                            failureReason['barcode_not_in_fasta'] = 1
+                    else:
+                        barcodeName = 'fail'
+                        failureReason['barcode_not_in_fasta'] = 1
             
             sequenceBarcodesDict[barcodeType] = barcodeName
-            outList += [barcodeName] + list(failureReason.values())
+            outList += [barcodeName, notExactMatch] + list(failureReason.values())
 
         return self.get_demux_output_prefix(sequenceBarcodesDict), outList
 
 
     def demux_BAM(self, BAMin, outputDir):
-
 
         bamfile = pysam.AlignmentFile(BAMin, 'rb')
         self.add_barcode_contexts()
@@ -393,14 +401,26 @@ class BarcodeParser:
         outFileDict = {}
         
         # columns names for dataframe to be generated from rows output by id_seq_barcodes
-        colNames = ['output_file_prefix']
+        colNames = ['output_file_prefix', 'count']
+
+        # column names and dictionary for grouping rows in final dataframe
+        groupByColNames = ['output_file_prefix']
+        sumColsDict = {'count':'sum'}
+
         for barcodeType in self.barcodeDicts:
-            colNames += [barcodeType, f'{barcodeType}_failed:context_not_present_in_reference_sequence', f'{barcodeType}_failed:context_appears_in_reference_more_than_once', f'{barcodeType}_failed:barcode_not_in_fasta']
+            groupByColNames.append(barcodeType)
+            intCols = [f'{barcodeType}:not_exact_match', f'{barcodeType}_failed:context_not_present_in_reference_sequence', f'{barcodeType}_failed:context_appears_in_reference_more_than_once', f'{barcodeType}_failed:barcode_not_in_fasta']
+            colNames.extend( [barcodeType] + intCols )
+            for col in intCols:
+                sumColsDict[col] = 'sum'
 
         rows = []
 
-        for BAMentry in bamfile:
-            refAln = self.align_reference(BAMentry)
+        for BAMentry in bamfile.fetch(self.reference.id):
+            try:
+                refAln = self.align_reference(BAMentry)
+            except:
+                print(BAMentry)
             outputPrefix, BAMentryBarcodeData = self.id_seq_barcodes(refAln, BAMentry)
             try:
                 outFileDict[outputPrefix].write(BAMentry)
@@ -408,12 +428,15 @@ class BarcodeParser:
                 fName = os.path.join(outputDir,f'{outputPrefix}_{self.tag}.bam')
                 outFileDict[outputPrefix] = pysam.AlignmentFile(fName, 'wb', template=bamfile)
                 outFileDict[outputPrefix].write(BAMentry)
-            rows.append([outputPrefix] + BAMentryBarcodeData)
+            count = 1
+            rows.append([outputPrefix,count] + BAMentryBarcodeData)
 
         for sortedBAM in outFileDict:
             outFileDict[sortedBAM].close()
 
         demuxStats = pd.DataFrame(rows, columns=colNames)
+        demuxStats = demuxStats.groupby(groupByColNames).agg(sumColsDict).reset_index()
+
 
         demuxStats.to_csv(os.path.join(outputDir, f'{self.tag}_demuxStats.csv'))
 
@@ -424,23 +447,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-def write_sorted_fqs(sortedDict):
-    """given output from the sortByBarcodes function, this will loop through all fastq lists
-    in the dictionary and write each to a separate new .fastq file. For barcode combinations
-    that are specified in the config file, the provided name for the barcode pair
-    will be used in the file name. Otherwise, the names for the individual barcodes,
-    separated by '—' will be used in the file name"""
-    bcNameLookup = barcode_name_dict(barcodePairs)
-    for bcPair in sortedDict:
-        if bcPair in bcNameLookup:
-            fwdFileName = f'{sample}_{bcNameLookup[bcPair]}_fwd.fastq'
-            rvsFileName = f'{sample}_{bcNameLookup[bcPair]}_rvs.fastq'
-        else:
-            fwdFileName = f'{sample}_{bcPair[0]}-{bcPair[1]}_fwd.fastq'
-            rvsFileName = f'{sample}_{bcPair[0]}-{bcPair[1]}_rvs.fastq'
-        fwdFile = os.path.join(outputDirectory, fwdFileName)
-        rvsFile = os.path.join(outputDirectory, rvsFileName)
-        with open(fwdFile, 'w') as fwdOut, open(rvsFile, 'w') as rvsOut:
-            SeqIO.write(sortedDict[bcPair][0], fwdOut, 'fastq')
-            SeqIO.write(sortedDict[bcPair][1], rvsOut, 'fastq')
