@@ -43,9 +43,6 @@ from snakemake.utils import min_version
 
 start_time = datetime.now()
 
-# rule all:
-#     input:
-#         ['sequences/guppy/
 
 # snakemake config
 min_version("5.5.2")
@@ -122,24 +119,6 @@ for tag in config['runs']:
             print_(f'[WARNING] Reference .fasta file for {refName} (given path: {config[refName]}) not found.', file=sys.stderr)
     else:
         print_(f"[WARNING] No reference .fasta file provided for {tag} in config.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
-
-# if not 'references' in config:
-#     config['references'] = {}
-# if 'references' in nanopype_env:
-#     for name, values in nanopype_env['references'].items():
-#         genome = values['genome']
-#         chr_sizes = values['chr_sizes'] if 'chr_sizes' in values else ''
-#         if not os.path.isfile(genome):
-#             print_("[WARNING] Genome for {name} not found in {genome}, skipping entry.".format(
-#                 name=name, genome=genome), file=sys.stderr)
-#             continue
-#         if chr_sizes and not os.path.isfile(chr_sizes):
-#             print_("[WARNING] Chromosome sizes for {name} not found in {chr_sizes}, skipping entry.".format(
-#                 name=name, chr_sizes=chr_sizes), file=sys.stderr)
-#             continue
-#         config['references'][name] = {"genome":genome, "chr_sizes":chr_sizes}
-# else:
-#     print_("[WARNING] No references in env.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
 
 
 # verify given binaries
@@ -321,15 +300,12 @@ config['roi'] = roi
 
 # # include modules
 include : "rules/storage.smk"
-include : "rules/basecalling.smk"
-include : "rules/alignment.smk"
-include : "rules/methylation.smk"
 include : "rules/sv.smk"
-include : "rules/demux.smk"
 include : "rules/transcript.smk"
 include : "rules/clean.smk"
 include : "rules/asm.smk"
 include : "rules/report.smk"
+include : "rules/pipeline.smk"
 
 # error and success handler
 def print_log(status='SUCCESS'):

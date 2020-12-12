@@ -58,18 +58,11 @@ basecalling_flappie_flags: ''
 alignment_samtools_flags: ''
 # command line flags for minimap2 DNA alignment
 ## alignment_minimap2_flags: '-ax map-ont -L'                                              # default options, optimized for alignment to genome
-alignment_minimap2_flags: '-a --for-only -A2 -B4 -O12 -E2 --secondary=no --end-bonus=13'   # options good for targeted sequencing, minimizes gaps defined in dms_tools2
+alignment_minimap2_flags: '-a --for-only -A2 -B4 -O12 -E2 --secondary=no --end-bonus=13'   # options good for targeted sequencing, minimizes gaps
 # command line flags for graphmap2
 alignment_graphmap2_flags: '-B 100'
 # command line flags for ngmlr
 alignment_ngmlr_flags: '-x ont --bam-fix'
-
-
-# methylation detection
-# Abs. log-likelyhood ratio to treat sites as methylated or unmethylated.
-methylation_nanopolish_logp_threshold: 2.0
-# Sequence quality threshold on CG sites to trust flappie methylation calls
-methylation_flappie_qval_threshold: 3
 
 
 # demux
@@ -82,32 +75,13 @@ deepbinner_models:
 demux_seq_workflow : 'custom'
 demux_seq_tag : 'default'
 demux_guppy_kits : 'EXP-NBD104'
-demux_fasta: ref/barcodes_6_52.992.fa
 
 
-# structural variation
-# command line flags directly passed to the sniffles execution
-sv_sniffles_flags: '-s 10 -l 30 -r 2000 --genotype'
-sv_svim_flags: ''
-sv_STRique_config: 'STRique.tsv'
-sv_STRique_model: 'r9_4_450bps.mpi.model'
-sv_STRique_mod_model: 'r9_4_450bps_mCpG.mpi.model'
-
-
-# transcriptome
-transcript_use_pychopper: True
-transcript_spliced_bam2gff_flags: ''
-transcript_cluster_gff_flags: ''
-transcript_collapse_partials: ''
-transcript_polish_clusters: ''
-
-
-# Assembly
-asm_genome_size : '48k'
-asm_flye_preset : '--nano-raw'
-asm_flye_flags : '--asm-coverage 35'
-asm_wtdbg2_preset : 'ont'
-asm_wtdbg2_flags : ''
+# mutation analysis
+mutation_analysis_quality_score_minimum: 20 # Minimum quality score needed for mutation to be counted. For amino acid level analysis, all nucleotides in the codon must be above the threshold for the mutation to be counted
+sequence_length_threshold: 0.1              # Proportion of sequence length to be used as threshold for discarding sequences that are of abberant length. Ex. if set to 0.1 and length of trimmed reference sequence is 1000 bp, then all sequences either below 900 or above 1100 bp will not be analyzed
+do_AA_analysis: True                        # If set to false, only nucleotide-level analysis will be generated. If set to true, AA-level analysis generated as well and, to prevent mismatch between nucleotide and amino acid -level analysis, sequences that do not pass AA-level quality checks will not be analyzed
+auto_detect_longest_ORF: True               # If set to true, automatically detects the longest ORF that can be identified in the reference sequence to use for protein level analysis. If analysis of a different protein sequence is desired, (e.g. shorter than full gene, so start or stop codon are not included) set to False and provide protein sequence as third reference in reference fasta file
 
 # runs to be analyzed
 runs:
@@ -115,7 +89,9 @@ runs:
     trpB:
         # name of folder that holds raw data in a reads folder ( data/{runname}/reads/ )
         runname: P0
-        # fasta file that contains reference sequence
+        # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
+        #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
+        #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc. 
         reference: ref/TrpB.fasta
 
         # list barcode types to be used for demuxing. Demux'd files are named according to these barcodes in the order provided
@@ -126,13 +102,14 @@ runs:
             fwd: 
                 context: NNNNNNCTC          # copy and paste from reference fasta sequence. Include sufficient sequence on one or both sides to distinguish from other barcodes
                 fasta: ref/barcodes_6_52_992.fa
-                # hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail. Default, 0.
+                hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail. Default, 0.
                 reverseComplement: False    # set to True if barcodes in fasta file are defined as 5' to 3'. Default, False.
             rvs:
                 context: TAANNNNNN  
                 hammingDistance: 0
                 fasta: ref/barcodes_6_52_992.fa
                 reverseComplement: True
+                hammingDistance: 0
             # lineage: # pre-encoded barcode, not added by primers. Uses a fasta file, with location defined by `fasta`, to identify barcodes. If the file does not already exist, it will first be created and filled with barcodes, and given names that include the number of sequences with each barcode
             #     context: TGNNNNNNNNAA
             #     fasta: ref/exampleBarcodes.fasta
