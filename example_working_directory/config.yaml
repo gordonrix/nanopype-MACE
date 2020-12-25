@@ -81,7 +81,8 @@ demux_guppy_kits : 'EXP-NBD104'
 mutation_analysis_quality_score_minimum: 20 # Minimum quality score needed for mutation to be counted. For amino acid level analysis, all nucleotides in the codon must be above the threshold for the mutation to be counted
 sequence_length_threshold: 0.1              # Proportion of sequence length to be used as threshold for discarding sequences that are of abberant length. Ex. if set to 0.1 and length of trimmed reference sequence is 1000 bp, then all sequences either below 900 or above 1100 bp will not be analyzed
 do_AA_analysis: True                        # If set to false, only nucleotide-level analysis will be generated. If set to true, AA-level analysis generated as well and, to prevent mismatch between nucleotide and amino acid -level analysis, sequences that do not pass AA-level quality checks will not be analyzed
-auto_detect_longest_ORF: True               # If set to true, automatically detects the longest ORF that can be identified in the reference sequence to use for protein level analysis. If analysis of a different protein sequence is desired, (e.g. shorter than full gene, so start or stop codon are not included) set to False and provide protein sequence as third reference in reference fasta file
+auto_detect_longest_ORF: False               # If set to true, automatically detects the longest ORF that can be identified in the reference sequence to use for protein level analysis. If analysis of a different protein sequence is desired, (e.g. shorter than full gene, so start or stop codon are not included) set to False and provide protein sequence as third reference in reference fasta file
+highest_abundance_genotypes: 2                # number of most frequently appearing genotypes to find a representative sequence for and write the alignment (output of clean_alignment method) to a file. Sequence with the highest average quality score will be chosen. 
 
 # runs to be analyzed
 runs:

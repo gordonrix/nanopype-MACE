@@ -1,18 +1,7 @@
 from Bio.Seq import Seq
 from Bio import SeqIO
-# from Bio.Alphabet import generic_dna
-# from Bio.Alphabet import IUPAC
-# from Bio import pairwise2
-# from Bio.pairwise2 import format_alignment
-# from Bio import Align
-# import itertools as IT
-# import numpy as np
-# import multiprocessing as mp
-# import datetime
-# import pandas as pd
-# import os
-# import time
-# import shutil
+import numpy as np
+import pandas as pd
 import re
 import pysam
 import sys
@@ -29,8 +18,8 @@ minQualThreshold = config['mutation_analysis_quality_score_minimum']
 outputDir = 'mutation_data'
 
 def main():
-    x = MutationAnalysis(config, tag, BAMin)
-    x.test()
+    x = MutationAnalysis(config, tag, BAMin, snakemake.output)
+    x.process_seqs()
 
 class MutationAnalysis:
 
@@ -38,24 +27,31 @@ class MutationAnalysis:
     def longest_ORF(sequence):
         return max(re.findall(r'ATG(?:(?!TAA|TAG|TGA)...)*(?:TAA|TAG|TGA)', sequence), key = len) # taken from https://stackoverflow.com/questions/31757876/python-find-longest-orf-in-dna-sequence#31758161
 
-    def __init__(self, config, tag, BAMin):
+    def __init__(self, config, tag, BAMin, output):
         """
         arguments:
 
-        config      - snakemake config dictionary for all runs
+        config          - snakemake config dictionary for all runs
         tag             - tag for which all BAM files will be demultiplexed, defined in config file
+        BAMin           - BAM file input
+        output          - list of output file names
         """
         refSeqfasta = config['runs'][tag]['reference']
         self.ref = list(SeqIO.parse(refSeqfasta, 'fasta'))[0]
+        self.ref.seq = self.ref.seq.upper()
         self.refTrimmed = list(SeqIO.parse(refSeqfasta, 'fasta'))[1]
+        self.refTrimmed.seq = self.refTrimmed.seq.upper()
         self.refStr = str(self.ref.seq)
         self.refTrimmedStr = str(self.refTrimmed.seq)
+        self.config = config
+        self.highestAbundanceGenotypes = config['highest_abundance_genotypes']
+        self.BAMin = BAMin
+        self.outputList = output
 
         assert (str(self.ref.seq).find(str(self.refTrimmed.seq)) != -1), f'Trimmed reference sequence ({self.refTrimmed.id}) must be substring of reference sequence ({self.ref.id})'
 
         self.refTrimmedStart = self.refStr.find(self.refTrimmedStr)
         self.refTrimmedEnd = len(self.refTrimmedStr) + self.refTrimmedStart
-        # self.alignedTrimmedRef = ' '*(self.refStr.find(self.refTrimmedStr)) + self.refTrimmedStr + ' '*(self.refStr.find(self.refTrimmedStr)+len(self.refTrimmedStr)) # pad trimmed reference with spaces for alignment of reference cigar operations
 
         self.QSminimum = config['mutation_analysis_quality_score_minimum']
         self.doAAanalysis = config['do_AA_analysis']
@@ -69,11 +65,12 @@ class MutationAnalysis:
             else:
                 assert (len(list(SeqIO.parse(refSeqfasta, 'fasta'))) >= 3), f'Reference sequence for ORF not provided. Please provide reference ORF as third sequence in reference fasta file `{refSeqfasta}` or consider setting `auto_detect_longest_ORF` to True'
                 refProtein = list(SeqIO.parse(refSeqfasta, 'fasta'))[2]
-                assert self.refStr.find(refProtein), f'Provided reference for protein sequence `{refProtein.id}` not found within reference sequence ({self.ref.id}). Ensure protein sequence reference is a substring of reference'
-                assert len(refProtein)%3 == 0, f'length of protein sequence reference `{refProtein.id}` not a multiple of 3, and therefore cannot be used as ORF'
-                self.refProtein = refProtein
+                refProteinStr = str(refProtein.seq).upper()
+                assert self.refStr.find(refProteinStr), f'Provided reference for protein sequence `{refProtein.id}` not found within reference sequence ({self.ref.id}). Ensure protein sequence reference is a substring of reference'
+                assert len(refProteinStr)%3 == 0, f'length of protein sequence reference `{refProtein.id}` not a multiple of 3, and therefore cannot be used as ORF'
+                self.refProtein = refProteinStr
             self.refProteinStart = self.refTrimmedStr.find(self.refProtein)
-            self.refProteinEnd = len(self.refProtein) + self.refProtein
+            self.refProteinEnd = len(self.refProtein) + self.refProteinStart
             if len(self.refProtein)/len(self.refTrimmedStr) < 0.7:
                 print(f'[WARNING] Length of protein sequence is under 70% of the length of trimmed reference sequence `{self.refTrimmed.id}`', file=sys.stderr)
 
@@ -120,18 +117,18 @@ class MutationAnalysis:
                 queryIndex += cTuple[1]
 
             elif cTuple[0] == 1: #insertion, not added to sequence to maintain alignment
-                if self.config['AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
-                    self.alignmentFailureReason = 'frameshift insertion'
+                if self.config['do_AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
+                    self.alignmentFailureReason = ('frameshift insertion', queryIndex)
                     return None
                 insertions.append((refIndex-self.refTrimmedStart, BAMentry.query_alignment_sequence[queryIndex:queryIndex+cTuple[1]]))
                 queryIndex += cTuple[1]
 
-            elif cTuple[0] == 2: #deletion, 'x' added to sequence to maintain alignment
-                if self.config['AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
-                    self.alignmentFailureReason = 'frameshift deletion'
+            elif cTuple[0] == 2: #deletion, '-' added to sequence to maintain alignment
+                if self.config['do_AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
+                    self.alignmentFailureReason = ('frameshift deletion', queryIndex)
                     return None
                 refAln += self.refStr[refIndex:refIndex+cTuple[1]]
-                queryAln += 'x'*cTuple[1]
+                queryAln += '-'*cTuple[1]
                 alignStr += ' '*cTuple[1]
                 deletions.append((refIndex-self.refTrimmedStart, cTuple[1]))
                 refIndex += cTuple[1]
@@ -144,7 +141,7 @@ class MutationAnalysis:
                 deletions]
 
 
-    def mut_array(self, cleanAlignment):
+    def ID_muts(self, cleanAlignment):
         """ Identify mutations in an aligned sequence
 
         Input: output of clean_alignment(). Mutations only counted if quality score
@@ -162,20 +159,22 @@ class MutationAnalysis:
                             possible nucleotides that a base could be mutated to. values in the array
                             will be set to 1 if a mutation at position x is mutated to amino acid that
                             corresponds to position y. If no mutations are found, an array of 0s is returned
-            genotype    - list of strings where each string is a list of different types of mutations separated by ', '
+            genotype    - list of strings where each string is a list of different types of mutations separated by ', '.
+                            Includes AA mutations in list only if self.doAAanalysis is True
         """
-        assert ref==self.refTrimmed, 'not supposed to happen' #remove ref if this doesn't throw an error ever                      <--- LOOK
         ref, alignStr, seq, qScores, insertions, deletions = cleanAlignment
+        assert ref==self.refTrimmedStr, 'not supposed to happen' #replace ref with self.refTrimmed if this doesn't throw an error ever                      <--- LOOK
 
         mismatches = [i for i,a in enumerate(alignStr) if a=='.']
 
         if self.doAAanalysis:
-            indelCodons = [] # list of amino acid positions that are affected by indel (for insertion, insertion is within a codon; for deletion, at least one base of codon deleted)
+            indelCodons = []    # list of amino acid positions that are affected by indel (for insertion, insertion is within a codon; for deletion, at least one base of codon deleted)
             for index, _ in insertions:
                 if self.refProteinStart <= index < self.refProteinEnd:
                     protIndex = index-self.refProteinStart
                     if protIndex%3 == 0: continue # ignore if insertion occurs between codons
-                    indelCodons.append( int(protIndex/3) )
+                    else: indelCodons.append( int(protIndex/3) )
+
             for index, length in deletions:
                 if self.refProteinStart <= index < self.refProteinEnd and self.refProteinStart <= index+length < self.refProteinEnd:
                     protIndexStart = index-self.refProteinStart
@@ -187,11 +186,14 @@ class MutationAnalysis:
         else:
             AAmutArray = None
 
-        NTmutArray = np.zeros((int(len(self.)), len(self.NTs)), dtype=int)
+        insOutput = ', '.join([str(index)+'ins'+NTs for index,NTs in insertions])               # string of all insertions for genotype output
+        delOutput = ', '.join([str(index)+'del'+str(length) for index,length in deletions])     # string of all deletions for genotype output
+
+        NTmutArray = np.zeros((int(len(self.refTrimmedStr)), len(self.NTs)), dtype=int)
         codonsChecked = []
         NTsubstitutions = []
-        AAsubstitutionsNonsynonymous = []
-        AAsubstitutionsSynonymous = []
+        AAnonsynonymous = []
+        AAsynonymous = []
 
         for i in mismatches:
 
@@ -199,13 +201,13 @@ class MutationAnalysis:
 
             wtNT = ref[i]
             mutNT = seq[i]
+
             NTmutArray[i,self.NTs.find(mutNT)] += 1
             NTsubstitutions.append(wtNT+str(i)+mutNT)
 
             if self.doAAanalysis and self.refProteinStart <= i < self.refProteinEnd:
 
                 protIndex = i-self.refProteinStart
-
                 codon = int(protIndex/3)
                 if codon in codonsChecked: continue
                 codonsChecked.append(codon)
@@ -219,276 +221,140 @@ class MutationAnalysis:
                 QStooLow = False
                 codonQS = qScores[codonIndices[0]:codonIndices[2]]
                 for qs in codonQS:
-                    if qs < minQualThreshold:
-                        QStooLow = True
-                if QStooLow: continue
+                    if qs < self.QSminimum: continue
 
-                wtAA = str(Seq(ref[codonIndices[0]:codonIndices[2]]).translate())
-                mutAA = str(Seq(seq[codonIndices[0]:codonIndices[2]]).translate())
+                wtAA = str(Seq(ref[codonIndices[0]:codonIndices[2]+1]).translate())
+                mutAA = str(Seq(seq[codonIndices[0]:codonIndices[2]+1]).translate())
+
                 if wtAA!=mutAA:
                     AAmutArray[codon, self.AAs.find(mutAA)] += 1
-                    AAsubstitutionsNonsynonymous.append(wtAA+str(codon)+mutAA)
+                    AAnonsynonymous.append(wtAA+str(codon+1)+mutAA)
                 else:
-                    AAsubstitutionsSynonymous.append(wtAA+str(codon))
-            
-        return NtmutArray, AAmutArray
-    
-    def test(self):
-        count = 0
-        for bam in pysam.AlignmentFile(BAMin, 'rb'):
-            if count<5:
-                L = self.clean_alignment(bam)
-                for a,b in zip([-50],[-1]):
-                    print(L[0][a:b])
-                    print(L[1][a:b])
-                    print(L[2][a:b])
-                    print(L[3][a:b])
-                print(L[4])
-                print(L[5])
-            count+=1
+                    AAsynonymous.append(wtAA+str(codon+1))
 
+        genotype = [', '.join(NTsubstitutions)]
+        genotype.append(insOutput)
+        genotype.append(delOutput)
 
-
-
-def print_aligned_record(recordAln):
-    """given the output from align_with_QS, will print the alignment
-    in an easily readable format"""
-    for i in range(0,len(recordAln[0]),50):
-        start = i-50
-        if start>=0:
-            for n in range(0,4):
-                s = recordAln[n]
-                if n == 1:
-                    spacer = ' '*(3-len(str(start+1)))
-                    print(spacer+str(start+1), s[start:i], i)
-                else:
-                    print((' '*3),s[start:i])
-            print('')
-    return
-
-def process_chunk(fqList, refSeq, firstResi):
-    """Accepts a list of any number of fastq records (fqList), a reference sequence (refSeq),
-        and the first residue in the provided protein sequence, and outputs the NT/AA distributions,
-        NT/AA arrays, and a list of records that failed to be properly processed"""
-    protLength = int(len(refSeq)/3)
-    NTmutArray = np.zeros((int(len(refSeq)), len(NTs)), dtype=int)
-    AAmutArray = np.zeros((protLength,len(AAs)), dtype=int)
-    NTmutDist = np.zeros(int(len(refSeq)), dtype=int)
-    AAmutDist = np.zeros(protLength, dtype=int)
-    failures = []
-
-    for record in fqList:
-        recordAligned = align_with_QS(record, refSeq)
-        if recordAligned:
-            # SeqNtMuts, SeqAaMuts = mut_array(recordAligned)
-            try:
-                SeqNtMuts, SeqAaMuts = mut_array(recordAligned)
-                NTmutArray = NTmutArray + SeqNtMuts
-                AAmutArray = AAmutArray + SeqAaMuts
-            except:
-                failures.append(record)
-                continue
-            NTtotalMuts = sum(sum(SeqNtMuts))
-            AAtotalMuts = sum(sum(SeqAaMuts))
-            NTmutDist[NTtotalMuts] += 1
-            AAmutDist[AAtotalMuts] += 1
-            if printMut:
-                print(record.id,'\n')
-                print_aligned_record(recordAligned)
-                print('')
+        if self.doAAanalysis:
+            for subType in [AAnonsynonymous, AAsynonymous]:
+                genotype.append(', '.join(subType))
         else:
-            failures.append(record)
+            totalAAmuts = None
+            
+        return NTmutArray, AAmutArray, genotype
 
-    return NTmutArray, AAmutArray, NTmutDist, AAmutDist, failures
+    def process_seqs(self):
+        """loops through a BAM file and produces appropriate .csv files to describe mutation data.
+        If config['do_AA_analysis']==False, will produce only files for NT mutation data, otherwise
+        will also produce AA mutation data"""
 
-# count lines in a file quickly
-def linecount(filename):
-    f = open(filename, 'rb')
-    bufgen = IT.takewhile(lambda x: x, (f.raw.read(1024*1024) for _ in IT.repeat(None)))
-    return sum( buf.count(b'\n') for buf in bufgen )
+        trimmedSeqLength = int(len(self.refTrimmedStr))
+        NTmutArray = np.zeros((trimmedSeqLength, len(self.NTs)), dtype=int)         # see ID_muts() docstring
+        NTmutDist = np.zeros(trimmedSeqLength, dtype=int)                           # 1D array distribution where position (x) is number of mutations and value is number of sequences with x mutations 
+        failuresList = []                                                           # list of data for failed sequences that will be used to generate DataFrame
+        failuresColumns = ['seq_ID', 'failure_reason', 'failure_index']             # columns for failures DataFrame
+        genotypesList = []                                                          # list of genotypes to be converted into a DataFrame
+        genotypesColumns = ['seq_ID', 'avg_quality_score', 'NT_substitutions', 'NT_insertions', 'NT_deletions'] # columns for genotypes DataFrame
+        wildTypeCount = 0
+        wildTypeRow = [wildTypeCount, 0, '', '', '']
 
-def get_mut_data(fq, refSeq, firstResi):
-    """ Generates .csv files for amino acid- and nucleotide-level mutations and distributions
-    of mutations in sequences. Parallelizes alignment by grouping up to 10,000 fastq
-    records and processing separately.
+        if self.doAAanalysis:
+            protLength = int( len(self.refProtein) / 3 )
+            AAmutArray = np.zeros((protLength, len(self.AAs)), dtype=int)
+            AAmutDist = np.zeros(protLength, dtype=int)
+            genotypesColumns.extend(['AA_substitutions_nonsynonymous', 'AA_substitutions_synonymous'])
+            wildTypeRow.extend(['', ''])
 
-    input: (List of fastq file names, Seq object reference sequence as a fasta file name,
-    int residue number of first codon in provided reference sequence)
-    Reference sequence must be in desired reading frame, without extraneous
-    nucleotides on either end
-    """
+        for bamEntry in pysam.AlignmentFile(self.BAMin, 'rb'):
+            cleanAln = self.clean_alignment(bamEntry)
+            if cleanAln:
+                seqNTmutArray, seqAAmutArray, seqGenotype = self.ID_muts(cleanAln)
+            else:
+                failuresList.append([bamEntry.query_name, self.alignmentFailureReason[0], self.alignmentFailureReason[1]])
+                continue
 
-    if printMut:
-        printRecs = []
-        recordIter = SeqIO.parse(fq, 'fastq')
-        for i,record in enumerate(recordIter):
-            if i<30:
-                printRecs.append(record)
-            else: break
-        NTmutArray, AAmutArray, NTmutDist, AAmutDist, failures = process_chunk(printRecs, refSeq, firstResi)
-    else:
-        # determine num of seqs to process per job such that they are relatively evenly distributed
-        seqcount = linecount(fq)/4
-        numWorkers = mp.cpu_count()
-        print('available CPU count: ', numWorkers)
-        seqsPerWorker = int(seqcount/numWorkers) + 1 #add 1 to ensure no leftovers on first pass if possible
-        while seqsPerWorker > 10000:
-            seqsPerWorker = int(seqsPerWorker/2)
-        first = True
+            seqTotalNTmuts = sum(sum(seqNTmutArray))
+            seqTotalAAmuts = sum(sum(seqAAmutArray))
+            NTmutArray += seqNTmutArray
+            NTmutDist[seqTotalNTmuts] += 1
+            if self.doAAanalysis:
+                AAmutArray += seqAAmutArray
+                AAmutDist[seqTotalAAmuts] += 1
 
-        # parallelize work, breaking up fastq into lists of SeqIO fastq records
-        recordIter = SeqIO.parse(open(fq), 'fastq')
-        pool = mp.Pool(numWorkers)
-        for chunk in iter(lambda: list(IT.islice(recordIter, int(seqsPerWorker*numWorkers))), []): # removes chunks from iterator until only [] remains
-            chunk = iter(chunk)
-            pieces = list(iter(lambda: (list(IT.islice(chunk, seqsPerWorker)),refSeq,firstResi), ([],refSeq,firstResi))) # removes pieces from iterator and combines them with args for process_chunk until iterator is empty
-            result = pool.starmap(process_chunk, pieces)
+            if all(mutType=='' for mutType in seqGenotype):     # keep a counter for wild type sequences instead of adding them to genotypes dataframe
+                wildTypeCount += 1
+                continue
 
-            # combining results
-            resultsIter = iter(result)
-            if first:
-                allResults = list(result[0])
-                next(resultsIter)
-                first = False
-            for r in resultsIter:
-                for i in range(0,4):
-                    allResults[i] += r[i]
-                allResults[4].extend(r[4])
+            avgQscore = np.average(np.array(cleanAln[3]))
+            seqGenotype = [bamEntry.query_name, avgQscore] + seqGenotype
+            genotypesList.append(seqGenotype)
 
-        pool.close()
-        pool.join()
+        genotypesDF = pd.DataFrame(genotypesList, columns=genotypesColumns)
+        failuresDF = pd.DataFrame(failuresList, columns=failuresColumns)
+        
+        genotypesDFcondensed = genotypesDF.groupby(by=genotypesColumns[2:], as_index=False).agg({'seq_ID':'count', 'avg_quality_score':'max'})[list(genotypesDF.columns)]
+        genotypesDFcondensed.sort_values(['seq_ID'], ascending=False, ignore_index=True, inplace=True)
+        wildTypeRow[0] = wildTypeCount
+        wildTypeDF = pd.DataFrame([wildTypeRow], columns=genotypesColumns)
+        genotypesDFcondensed = pd.concat([wildTypeDF,genotypesDFcondensed], ignore_index=True)
+        genotypesDFcondensed.rename(index={0:'wildtype'}, inplace=True)
+        genotypesDFcondensed.reset_index(inplace=True)
+        genotypesDFcondensed.rename(columns={'index':'genotype', 'seq_ID':'count'}, inplace=True)
 
-        NTmutArray, AAmutArray, NTmutDist, AAmutDist, failures = allResults
+        # iterate through x genotypes with highest counts (x defined in config file under 'num_representative_seqs'), get the representative sequence, and write alignments to file
+        topHitsDF = genotypesDFcondensed.iloc[0:self.highestAbundanceGenotypes+1,]
+        seqIDlist = []
+        with open(self.outputList[0], 'w') as txtOut:
+            nameIndexedBAM = pysam.IndexedReads(pysam.AlignmentFile(self.BAMin, 'rb'))
+            nameIndexedBAM.build()
+            for row in topHitsDF.itertuples():
+                if row.genotype=='wildtype':
+                    continue
+                rowIndexFromBool = (row.avg_quality_score == genotypesDF.loc[:, 'avg_quality_score']) & (row.NT_substitutions == genotypesDF.loc[:, 'NT_substitutions']) & (row.NT_insertions == genotypesDF.loc[:, 'NT_insertions']) & (row.NT_deletions == genotypesDF.loc[:, 'NT_deletions'])
+                seqID = genotypesDF[rowIndexFromBool]['seq_ID'].tolist()[0]
+                iterator = nameIndexedBAM.find(seqID)
+                for BAMentry in iterator:
+                    break
+                ref, alignString, seq, _, _, _ = self.clean_alignment(BAMentry)
+                txtOut.write(f'Genotype {row.genotype} representative sequence\n')
+                for string in [ref, alignString, seq]:
+                    txtOut.write(string+'\n')
+                txtOut.write('\n')
 
-    ntIDs = list(str(refSeq))
-    ntPositions = [f'{str(i)}' for i in range(0, len(refSeq))]
-    WTnts = [ID+ntPosi for ID,ntPosi in zip(ntIDs,ntPositions)]
-    NTmutDF = pd.DataFrame(NTmutArray, columns=list(NTs))
-    NTmutDF['wt_nucleotides'] = pd.Series(WTnts)
-    NTmutDF.set_index('wt_nucleotides', inplace=True)
-    NTmutDF = NTmutDF.transpose()
+        ntIDs = list(self.refTrimmedStr)
+        ntPositions = [f'{str(i)}' for i in range(0, len(self.refTrimmedStr))]
+        WTnts = [ID+ntPosi for ID,ntPosi in zip(ntIDs,ntPositions)]
+        NTmutDF = pd.DataFrame(NTmutArray, columns=list(self.NTs))
+        NTmutDF['wt_nucleotides'] = pd.Series(WTnts)
+        NTmutDF.set_index('wt_nucleotides', inplace=True)
+        NTmutDF = NTmutDF.transpose()
 
-    resiIDs = list(str(refSeq.translate()))
-    protLength = int(len(refSeq)/3)
-    resiPositions = [f'{str(i)}' for i in range(firstResi, firstResi+protLength)]
-    WTresis = [ID+posi for ID,posi in zip(resiIDs,resiPositions)]
-    AAmutDF = pd.DataFrame(AAmutArray, columns=list(AAs))
-    AAmutDF['wt_residues'] = pd.Series(WTresis)
-    AAmutDF.set_index('wt_residues', inplace=True)
-    AAmutDF = AAmutDF.transpose()
+        NTdistDF = pd.DataFrame(NTmutDist, columns=['seqs_with_n_NTsubstitutions'])
+        NTdistDF.index.name = 'n'
 
-    NTdistDF = pd.DataFrame(NTmutDist, columns=['seqs_with_n_NTsubstitutions'])
-    NTdistDF.index.name = 'n'
-    AAdistDF = pd.DataFrame(AAmutDist, columns=['seqs_with_n_AAsubstitutions'])
-    AAdistDF.index.name = 'n'
-    return NTmutDF, AAmutDF, NTdistDF, AAdistDF, failures
+        genotypesDFcondensed.drop(columns=['avg_quality_score'], inplace=True)
+
+        genotypesDFcondensed.to_csv(self.outputList[1], index=False)
+        failuresDF.to_csv(self.outputList[2], index=False)
+        NTmutDF.to_csv(self.outputList[3], index=False)
+        NTdistDF.to_csv(self.outputList[4], index=False)
+        
+        if self.doAAanalysis:
+            resiIDs = list(str(Seq(self.refProtein).translate()))
+            protLength = int(len(self.refProtein)/3)
+            resiPositions = [str(i) for i in range(1, int((len(self.refProtein)/3)+1) )]
+            WTresis = [ID+posi for ID,posi in zip(resiIDs,resiPositions)]
+            AAmutDF = pd.DataFrame(AAmutArray, columns=list(self.AAs))
+            AAmutDF['wt_residues'] = pd.Series(WTresis)
+            AAmutDF.set_index('wt_residues', inplace=True)
+            AAmutDF = AAmutDF.transpose()
+
+            AAdistDF = pd.DataFrame(AAmutDist, columns=['seqs_with_n_AAsubstitutions'])
+            AAdistDF.index.name = 'n'
+
+            AAmutDF.to_csv(self.outputList[5], index=False)
+            AAdistDF.to_csv(self.outputList[6], index=False)
 
 if __name__ == '__main__':
-
     main()
-
-
-
-    # def Flip_Strand_If_Needed(fq, ref):
-#     """ given a SeqIO record and a reference sequence,
-#     this function will return either the same sequence and quality score or the reverse complement of that sequence
-#     and the reverse of the quality score such that the output is the same strandedness as the reference sequence
-
-#     Orientation is checked by attempting to identify any 15 bp chunks present in the reference
-#     sequence that are also present in the sequence. If any are identified, then the sequence is not flipped,
-#     if none are identified, then the sequence will be flipped (reverse complement is returned)
-#     """
-#     refS = str(ref)
-#     seqS = str(fq.seq)
-#     seqChunkList = []
-#     i1 = -1
-#     for i2 in range(0,len(ref),15):
-#         if i1 != -1:
-#             seqChunkList.append(seqS[i1:i2])
-#         i1 = i2
-#     # search 15 bp chunks of seq for presence in ref. If any are present, don't flip
-#     doFlip = True
-#     for chunk in seqChunkList:
-#         if chunk in refS:
-#             doFlip = False
-#             break
-#     if doFlip:
-#         fq = fq.reverse_complement(id=True)
-#     return fq
-
-# def align_with_QS(fastqRecord, ref):
-#     """ Produce alignment of a fastqrecord as a string, with quality scores
-#     for bases as list of ints, all trimmed appropriately. Outputs None if
-#     sequence does not pass alignment quality checks
-
-#     inputs: individual fastq record produced from seqIO.parse and a sequence
-#     to align the record to, as seq object
-#     """
-#     if flippyDo:
-#         fastqRecord = Flip_Strand_If_Needed(fastqRecord,ref)
-#     sequence = fastqRecord.seq
-#     qScore = fastqRecord.letter_annotations['phred_quality']
-#     A = list(map(float,alnScoringAlg))
-#     alignment = pairwise2.align.localms(ref, sequence, A[0],A[1],A[2],A[3])
-#     refAln, seqAln, alnScore, begin, end = (alignment[0])
-#     alnScoreThreshold = len(ref)/2
-#     if alnScore < alnScoreThreshold:
-#         return None
-#     alignF = format_alignment(*alignment[0])
-#     newLineIndices = [i for i, a in enumerate(alignF) if a == '\n']
-#     alignString = alignF[newLineIndices[0]+1:newLineIndices[1]]
-
-#     # determines number of gaps at beginning of alignment string
-#     startGap = 0
-#     for i in alignString:
-#         if i in ['|', '.']:
-#             break
-#         elif i == ' ':
-#             startGap += 1
-
-#     # put three alignment elements into same reference frame, trimming ends
-#     refAln = refAln[begin:end]
-#     alignString = alignString[startGap:end]
-#     seqAln = seqAln[begin:end]
-#     qScore = qScore[begin:end]
-
-#     if len(ref)!=len(refAln)!=len(alignString)!=len(seqAln):
-#         return None
-
-#     refAAstart = ref[:3].translate()
-#     refAAend = ref[-3:].translate()
-
-#     # quality checks
-#     if discardInDelSeqs and ' ' in alignString:
-#         return None
-#     if Seq(refAln[:3]).translate()!=refAAstart or Seq(refAln[-3:]).translate()!=refAAend:
-#         return None
-
-#     # clean gaps unless sequences with gaps are discarded
-#     if not discardInDelSeqs:
-#         try:
-#             newRefAln = ''
-#             newAlignString = ''
-#             newSeqAln = ''
-#             newQS = []
-#             for i in range(0, len(alignString)):
-#                 if alignString[i] == ' ':
-#                     if seqAln[i] == '-':
-#                         newRefAln += refAln[i]
-#                         newAlignString += '|'
-#                         newSeqAln += refAln[i]
-#                         newQS.append(-1)
-#                     else: pass
-#                 else:
-#                     newRefAln += refAln[i]
-#                     newAlignString += alignString[i]
-#                     newSeqAln += seqAln[i]
-#                     newQS.append(qScore[i])
-#             refAln = newRefAln
-#             alignString = newAlignString
-#             seqAln = newSeqAln
-#             qScore = newQS
-#         except:
-#             return None
-
-#     return [refAln, alignString, seqAln, qScore]

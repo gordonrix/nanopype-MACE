@@ -24,6 +24,49 @@ def get_batches_basecaller2(wildcards):
         )
     return batches
 
+# guppy basecalling
+rule guppy:
+    input:
+        batch = lambda wildcards : get_signal_batch(wildcards, config),
+        run = lambda wildcards : [os.path.join(config['storage_data_raw'], wildcards.runname)] + ([os.path.join(config['storage_data_raw'], wildcards.runname, 'reads.fofn')] if get_signal_batch(wildcards, config).endswith('.txt') else [])
+    output:
+        ["sequences/batches/{tag}/{runname}/{batch, [^.]*}.fastq.gz"] +
+        ["sequences/batches/{tag}/{runname}/{batch, [^.]*}.sequencing_summary.txt"] +
+        (["sequences/batches/{tag}/{runname}/{batch, [^.]*}.hdf5"] if config.get('basecalling_guppy_config') and 'modbases' in config['basecalling_guppy_config'] else [])
+    shadow: "shallow"
+    threads: config['threads_basecalling']
+    resources:
+        threads = lambda wildcards, threads: threads,
+        mem_mb = lambda wildcards, threads, attempt: int((1.0 + (0.1 * (attempt - 1))) * (config['memory']['guppy_basecaller'][0] + config['memory']['guppy_basecaller'][1] * threads)),
+        time_min = lambda wildcards, threads, attempt: int((1440 / threads) * attempt * config['runtime']['guppy_basecaller']), # 90 min / 16 threads
+        GPU = 1
+    params:
+        guppy_config = lambda wildcards : '-c {cfg}{flags}'.format(
+                            cfg = config.get('basecalling_guppy_config') or 'dna_r9.4.1_450bps_fast.cfg',
+                            flags = ' --fast5_out' if config.get('basecalling_guppy_config') and 'modbases' in config['basecalling_guppy_config'] else ''),
+        guppy_server = lambda wildcards, input : '' if (config.get('basecalling_guppy_flags') and '--port' in config['basecalling_guppy_flags']) else '--port ' + config['basecalling_guppy_server'][hash(input.batch) % len(config['basecalling_guppy_server'])] if config.get('basecalling_guppy_server') else '',
+        guppy_flags = lambda wildcards : config.get('basecalling_guppy_flags') or '',
+        filtering = lambda wildcards : '--qscore_filtering --min_qscore {score}'.format(score = config['basecalling_guppy_qscore_filter']) if config['basecalling_guppy_qscore_filter'] > 0 else '',
+        index = lambda wildcards : '--index ' + os.path.join(config['storage_data_raw'], wildcards.runname, 'reads.fofn') if get_signal_batch(wildcards, config).endswith('.txt') else '',
+        mod_table = lambda wildcards, input, output : output[2] if len(output) == 3 else ''
+    singularity:
+        config['singularity_images']['basecalling']
+    shell:
+        """
+        mkdir -p raw
+        {config[bin_singularity][python]} {config[sbin_singularity][storage_fast5Index.py]} extract {input.batch} raw/ {params.index} --output_format bulk
+        {config[bin_singularity][guppy_basecaller]} -i raw/ --recursive --num_callers 1 --cpu_threads_per_caller {threads} -s workspace/ {params.guppy_config}  {params.filtering} {params.guppy_flags} {params.guppy_server}
+        FASTQ_DIR='workspace/pass'
+        if [ \'{params.filtering}\' = '' ]; then
+            FASTQ_DIR='workspace'
+        fi
+        find ${{FASTQ_DIR}} -regextype posix-extended -regex '^.*f(ast)?q' -exec cat {{}} \; | gzip > {output[0]}
+        find ${{FASTQ_DIR}} -name 'sequencing_summary.txt' -exec mv {{}} {output[1]} \;
+        if [ \'{params.mod_table}\' != '' ]; then
+            {config[bin_singularity][python]} {config[sbin_singularity][basecalling_guppy_mod.py]} extract `find workspace/ -name '*.fast5'` {params.mod_table}
+        fi
+        """
+
 rule basecaller_merge_tag:
     input:
         lambda wildcards: get_batches_basecaller2(wildcards)
@@ -171,7 +214,7 @@ rule mutation_analysis:
         bam = 'demux/{tag}_{barcodes}.bam',
         bai = 'demux/{tag}_{barcodes}.bam.bai'
     output:
-        expand('mutation_data/{{tag}}_{{barcodes}}_{datatype}', datatype = ['genotypes.csv', 'NT-muts-aggregated.csv', 'AA-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-distribution.cvs', 'failures.bam'])
+        expand('mutation_data/{{tag}}_{{barcodes}}_{datatype}', datatype = ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] == True else ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.bam', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv'])
     script:
         'utils/mutation_analysis.py'
 
