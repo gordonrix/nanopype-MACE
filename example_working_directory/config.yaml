@@ -33,32 +33,24 @@ threads_asm: 4
 
 
 # basecalling
-# run basecalling and write predicted barcode into name of fastq/fasta output
-basecalling_albacore_barcoding: false
-# do not split output into pass and fail folders, report every sequence.
-basecalling_albacore_disable_filtering: true
-# command line flags directly passed to albacore e.g. --disable_pings
-basecalling_albacore_flags: ''
+do_basecalling: False                # set to True if basecalling needs to be run
 # config file for guppy basecalling
 basecalling_guppy_config: 'dna_r9.4.1_450bps_fast.cfg'
 # quality qscore filter for guppy. 0 means all reads are written to the output
 basecalling_guppy_qscore_filter: 0
 # command line flags directly passed to guppy
 basecalling_guppy_flags: ''
-# list of guppy_basecall_server
-# basecalling_guppy_server:
-    # - 'localhost:9000'
-# the flappie basecaller supports different models, check the docs for available options
-basecalling_flappie_model: 'r941_5mC'
-# command line flags directly passed to flappie
-basecalling_flappie_flags: ''
+
+# UMI clustering and consensus
+UMI_consensus: False
+consistent_orientation: False   # Whether or not reads are all in the same orientation. If set to False, prior to UMI clustering and consensus calling, ends of sequences will be aligned, and these alignments will be used to flip the orientation of sequences that are not in the same orientation as the reference sequence. If set to False, must assign sequence(s) to use for alignment of ends using `orientation_alignment_sequence_f` and `orientation_alignment_sequence_r` for each specific run
 
 
 # alignment flags for samtools e.g. -F 2304 for RNA alignment
 alignment_samtools_flags: ''
 # command line flags for minimap2 DNA alignment
 ## alignment_minimap2_flags: '-ax map-ont -L'                                              # default options, optimized for alignment to genome
-alignment_minimap2_flags: '-a --for-only -A2 -B4 -O12 -E2 --secondary=no --end-bonus=13'   # options good for targeted sequencing, minimizes gaps
+alignment_minimap2_flags: '-a -A2 -B4 -O12 -E2 --secondary=no --end-bonus=13'   # options good for targeted sequencing, minimizes gaps. Use --for-only flag to align to only the forward read of the reference sequence if all reads are already in the correct alignment.
 # command line flags for graphmap2
 alignment_graphmap2_flags: '-B 100'
 # command line flags for ngmlr
@@ -66,6 +58,8 @@ alignment_ngmlr_flags: '-x ont --bam-fix'
 
 
 # demux
+demux: True
+demux_threshold: 300  # count threshold for carrying through to subsequent rules. A demultiplexed file must contain at least this many sequences for further processing
 demux_batch_size: 4000
 demux_default: 'custom'
 deepbinner_models:
@@ -76,13 +70,23 @@ demux_seq_workflow : 'custom'
 demux_seq_tag : 'default'
 demux_guppy_kits : 'EXP-NBD104'
 
-
 # mutation analysis
 mutation_analysis_quality_score_minimum: 20 # Minimum quality score needed for mutation to be counted. For amino acid level analysis, all nucleotides in the codon must be above the threshold for the mutation to be counted
 sequence_length_threshold: 0.1              # Proportion of sequence length to be used as threshold for discarding sequences that are of abberant length. Ex. if set to 0.1 and length of trimmed reference sequence is 1000 bp, then all sequences either below 900 or above 1100 bp will not be analyzed
 do_AA_analysis: True                        # If set to false, only nucleotide-level analysis will be generated. If set to true, AA-level analysis generated as well and, to prevent mismatch between nucleotide and amino acid -level analysis, sequences that do not pass AA-level quality checks will not be analyzed
 auto_detect_longest_ORF: False               # If set to true, automatically detects the longest ORF that can be identified in the reference sequence to use for protein level analysis. If analysis of a different protein sequence is desired, (e.g. shorter than full gene, so start or stop codon are not included) set to False and provide protein sequence as third reference in reference fasta file
-highest_abundance_genotypes: 2                # number of most frequently appearing genotypes to find a representative sequence for and write the alignment (output of clean_alignment method) to a file. Sequence with the highest average quality score will be chosen. 
+highest_abundance_genotypes: 5                # number of most frequently appearing genotypes to find a representative sequence for and write the alignment (output of clean_alignment method) to a file. Sequence with the highest average quality score will be chosen. 
+
+# mutation statistics
+unique_genotypes_count_threshold: 5         # minimum number of reads of a particular genotype for that genotype to be included in unique genotypes count
+
+# plot_distributions
+percentile: 90                      # percentile of mutation distribution to show. X axis of plot will be 1.5x this percentile for the maximum of all distributions for the tag
+
+# plot_mut_spectrum
+    # barcode group name to be used as the background for calculating the mutation spectrum
+    #   to use, this barcode group name must be present within all samples being analyzed
+background: background
 
 # runs to be analyzed
 runs:
@@ -92,8 +96,13 @@ runs:
         runname: P0
         # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
         #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
-        #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc. 
+        #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc.
+        #   Third sequence is optional, see `auto_detect_longest_ORF`
         reference: ref/TrpB.fasta
+
+        # Sequence(s) to use for distinguishing forward and reverse orientations. For each, copy/paste subsequence from reference sequence that are present in forward and/or reverse primers and are distinct from the opposite orientation. Only necessary if consistent_orientation = False. Only one is necessary, but providing both forward and reverse will improve accuracy. Alignment of 10000 sequences for both forward and reverse sequences of length 8 takes ~7 seconds, and scales somewhat linear with sequence length, so be conservative if possible
+        orientation_alignment_sequence_f: TCATAGAC
+        orientation_alignment_sequence_r: GGGTGCTA
 
         # list barcode types to be used for demuxing. Demux'd files are named according to these barcodes in the order provided
         #   if (1) both sequence context and fasta files are provided, (2) context can be found within the reference sequence,
@@ -101,13 +110,12 @@ runs:
 
         barcodeInfo: # different types of barcodes present within each sequence, defined by the sequence context around the barcode location
             fwd: 
-                context: NNNNNNCTC          # copy and paste from reference fasta sequence. Include sufficient sequence on one or both sides to distinguish from other barcodes
+                context: NNNNNNCTC          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
                 fasta: ref/barcodes_6_52_992.fa
-                hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail. Default, 0.
                 reverseComplement: False    # set to True if barcodes in fasta file are defined as 5' to 3'. Default, False.
+                hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
             rvs:
                 context: TAANNNNNN  
-                hammingDistance: 0
                 fasta: ref/barcodes_6_52_992.fa
                 reverseComplement: True
                 hammingDistance: 0
