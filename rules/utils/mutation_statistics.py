@@ -21,36 +21,40 @@ def main():
     fDict = inFileDict(inputList)
     datatypes = ['genotypes', 'failures', 'NT-muts-aggregated', 'NT-muts-distribution']
     if config['do_AA_analysis']:
-        cols = ['sample', 'barcode_pair', 'total_seqs', 'total_failed_seqs', 'mean_AA_mutations_per_seq', 'median_AA_mutations_per_seq',
-        'mean_NT_mutations_per_seq', 'median_NT_mutations_per_seq', 'transversions', 'transitions']
-        datatypes.append('AA-muts-distribution')
+        cols = ['sample', 'barcode_group', 'total_seqs', 'total_failed_seqs', 'total_AA_mutations', 'mean_AA_mutations_per_seq', 'median_AA_mutations_per_seq',
+        'total_NT_mutations', 'mean_NT_mutations_per_seq', 'median_NT_mutations_per_seq', 'transversions', 'transitions']
+        datatypes.extend(['AA-muts-distribution', 'AA-muts-aggregated'])
     else:
         cols = ['sample', 'barcode_pair', 'total_seqs', 'total_failed_seqs',
-        'mean_NT_mutations_per_seq', 'median_NT_mutations_per_seq', 'transversions', 'transitions']
+        'total_NT_mutations', 'mean_NT_mutations_per_seq', 'median_NT_mutations_per_seq', 'transversions', 'transitions']
     for sample in fDict:
-        for bcPair in fDict[sample]:
+        for bcGroup in fDict[sample]:
             DFdict = {}
             for dType in datatypes:
-                DFdict[dType] = pd.read_csv(fDict[sample][bcPair][dType], index_col=0)
+                DFdict[dType] = pd.read_csv(fDict[sample][bcGroup][dType], index_col=0)
             
-            if config['do_AA_analysis']:
-                AAdist = DFdict['AA-muts-distribution']['seqs_with_n_AAsubstitutions']
             NTdist = DFdict['NT-muts-distribution']['seqs_with_n_NTsubstitutions']
             totalSeqs = NTdist.sum()
             
             failCount = len(DFdict['failures'])
 
             NTmuts = DFdict['NT-muts-aggregated'].transpose()
+            total_NT_mutations = NTmuts.values.sum()
             NTmuts.reset_index(inplace=True)
             transNTmuts = NTmuts.apply(lambda row:
                 transversions_transitions(row['index'], row['A'], row['T'], row['G'], row['C']), axis=1, result_type='expand')
             allMutTypes = NTmuts.apply(lambda row:
                 mut_type(row['index'], row['A'], row['T'], row['G'], row['C']), axis=1, result_type='expand')
             NTmuts = pd.concat([NTmuts, transNTmuts, allMutTypes], axis='columns')
-            valuesList = [sample, bcPair, totalSeqs, failCount]
+
+            valuesList = [sample, bcGroup, totalSeqs, failCount]
+
             if config['do_AA_analysis']:
-                valuesList.extend([compute_mean_from_dist(AAdist), compute_median_from_dist(AAdist)])
-            valuesList.extend([compute_mean_from_dist(NTdist), compute_median_from_dist(NTdist),
+                AAdist = DFdict['AA-muts-distribution']['seqs_with_n_AAsubstitutions']
+                total_AA_mutations = DFdict['AA-muts-aggregated'].values.sum()
+                valuesList.extend([total_AA_mutations, compute_mean_from_dist(AAdist), compute_median_from_dist(AAdist)])
+
+            valuesList.extend([total_NT_mutations, compute_mean_from_dist(NTdist), compute_median_from_dist(NTdist),
                 NTmuts['transversions'].sum(), NTmuts['transitions'].sum()] + [allMutTypes[mutType].sum() for mutType in allMutTypes])
             
             statsList.append(valuesList)
@@ -66,7 +70,7 @@ def compute_mean_from_dist(dist):
     for n, count in enumerate(dist):
         total += n*count
     if total!=0:
-        return total/dist.sum()
+        return round(total/dist.sum(), 2)
     else:
         return 0
 
@@ -79,10 +83,14 @@ def compute_median_from_dist(dist):
     if all([count==0 for count in dist]):
         return 0
     else:
-        return statistics.median(seqList)
+        return int(statistics.median(seqList))
 
 def mut_type(WT, A, T, G, C):
-    """ returns number of each type of mutation """
+    """ returns number of each type of mutation as columns
+    Used on one sequence position at a time so only one of the four wtNT
+    will not be 0 for an individual function call, but combining all outputs
+    for all sequence positions gives the total number of each type
+    """
     wtNT = WT[0]
     mutsDict = {'A':{}, 'T':{}, 'G':{}, 'C':{}} #nested dict to be used for tracking all 12 types of substitutions
     nts = 'ATGC'
@@ -119,7 +127,7 @@ def transversions_transitions(WT, A, T, G, C):
 
 def inFileDict(inFileList):
     """ generate a nested dictionary of the input files organized by sample and barcode
-        in the format: dict[sample][barcode][dataType]=fileName """
+        in the format: dict[sample][barcodeGroup][dataType]=fileName """
     outDict = {}
     for f in inFileList:
         sample = f.split('_')[-3].split('/')[-1]

@@ -366,3 +366,11 @@ to make sure everything is configured correctly.
 If you need further assistance, feel free to open an issue at
     https://github.com/giesselmann/nanopype/issues
 and attach the above Snakemake and Nanopype log files.""".format(log_name), file=sys.stderr)
+
+
+# rule targets:
+#     input:
+#         expand('{tag}_mutation-stats.csv', tag=config['runs'])
+        # expand('plots/{tag}_{AAorNT}-mutation-distributions.html', tag=config['runs'], AAorNT=['AA','NT'])
+# expand('plots/{tag}_{AAorNT}-mutation-spectrum.html', tag=config['runs'])
+# expand('plots/{tag}_{AAorNT}-mutations-aggregated.html', tag=config['runs'])

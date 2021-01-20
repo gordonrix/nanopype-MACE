@@ -24,19 +24,20 @@ from Bio import Align, pairwise2, Seq
 from Bio.pairwise2 import format_alignment
 from Bio import SeqIO
 
-### Asign variables from config file
+### Asign variables from config file and input
 config = snakemake.config
 tag = snakemake.wildcards.tag
-BAMin = str(snakemake.input.alignment)
+BAMin = str(snakemake.input)
 
-refSeqfasta = config['runs'][tag]['reference']
-ref = list(SeqIO.parse(refSeqfasta, 'fasta'))[0]
 barcodeInfo = config['runs'][tag]['barcodeInfo']
 barcodeGroups = config['runs'][tag]['barcodeGroups']
 
 ### Output variables
-outputDir = 'demux'
+outputDir = str(snakemake.output).split(f'/{tag}_demultiplex_complete')[0]
 
+def main():
+    bcp = BarcodeParser(config['runs'], tag)
+    bcp.demux_BAM(BAMin, outputDir)
 
 class BarcodeParser:
 
@@ -151,21 +152,12 @@ class BarcodeParser:
             barcodes = [bc for bc in self.barcodeDicts[barcodeType]]
             barcodeLength = self.barcodeContexts[barcodeType].count('N')
             for i,bc in enumerate(barcodes):
-                try: # check that barcode is not repeated
-                    assert barcodes.count(bc) == 1
-                except AssertionError:
-                    raise AssertionError(f'Barcode {bc} present more than once in {self.barcodeInfo[barcodeType]["fasta"]} Duplicate barcodes are not allowed.')
-                try: # check that barcode is of the correct length
-                    assert len(bc) == barcodeLength
-                except AssertionError:
-                    raise AssertionError(f'Barcode {bc} is longer than the expected length of {barcodeLength} based on {self.barcodeContexts[barcodeType]}')
-                try: # check that barcode is above the specified hamming distance away from all other barcodes
-                    otherBCs = barcodes[:i]+barcodes[i+1:]
-                    for otherBC in otherBCs:
-                        hamDist = self.hamming_distance(bc, otherBC)
-                        assert hamDist > hammingDistanceDict[barcodeType]
-                except AssertionError:
-                    raise AssertionError(f'Barcode {bc} is within hammingDistance {hamDist} of barcode {otherBC}')
+                assert (barcodes.count(bc) == 1), f'Barcode {bc} present more than once in {self.barcodeInfo[barcodeType]["fasta"]} Duplicate barcodes are not allowed.'
+                assert (len(bc) == barcodeLength), f'Barcode {bc} is longer than the expected length of {barcodeLength} based on {self.barcodeContexts[barcodeType]}'
+                otherBCs = barcodes[:i]+barcodes[i+1:]
+                for otherBC in otherBCs:
+                    hamDist = self.hamming_distance(bc, otherBC)
+                    assert (hamDist > hammingDistanceDict[barcodeType]), f'Barcode {bc} is within hammingDistance {hamDist} of barcode {otherBC}'
         self.hammingDistances = hammingDistanceDict
 
     @staticmethod
@@ -241,7 +233,7 @@ class BarcodeParser:
                 index += cTuple[1]
             elif cTuple[0] == 1: #insertion
                 refAln += '-'*cTuple[1]
-            elif cTuple[0]: #deletion
+            elif cTuple[0] == 2: #deletion
                 index += cTuple[1]
         return refAln
 
@@ -268,11 +260,8 @@ class BarcodeParser:
                 first = False
                 firstGroupDict = groupDict
             else:
-                try: # ensure all barcode group types are the same
-                    assert(all([bcType in groupDict for bcType in firstGroupDict]))
-                    assert(all([bcType in firstGroupDict for bcType in groupDict]))
-                except AssertionError:
-                    raise AssertionError(f'All barcode groups do not use the same set of barcode types. Group {group} differs from group {firstGroup}')
+                assert (all([bcType in groupDict for bcType in firstGroupDict])), f'All barcode groups do not use the same set of barcode types. Group {group} differs from group {firstGroup}'
+                assert (all([bcType in firstGroupDict for bcType in groupDict])), f'All barcode groups do not use the same set of barcode types. Group {group} differs from group {firstGroup}'
 
         self.groupedBarcodeTypes = groupedBarcodeTypes
         self.ungroupedBarcodeTypes = ungroupedBarcodeTypes
@@ -299,7 +288,6 @@ class BarcodeParser:
         uses the barcode group name dictionary `self.barcodeGroupNameDict` created by add_barcode_name_dict
         to generate a file name prefix according to their group name if it can be identified, or will
         produce a file name prefix simply corresponding to the barcodes if a group can't be identified.
-        Note that the separator is an n dash '–'.
 
         examples:
         
@@ -326,16 +314,16 @@ class BarcodeParser:
             bc = sequenceBarcodesDict[barcodeType]
             if barcodeType in self.groupedBarcodeTypes:
                 if bc == 'fail':
-                    return '–'.join(sequenceBarcodesDict.values())
+                    return '-'.join(sequenceBarcodesDict.values())
                 groupBarcodes += tuple([bc])
             else:
                 ungroupSequenceBarcodes.append(bc)
 
         try:
             groupName = self.barcodeGroupNameDict[groupBarcodes]
-            return '–'.join([groupName]+ungroupSequenceBarcodes)
+            return '-'.join([groupName]+ungroupSequenceBarcodes)
         except KeyError:
-            return '–'.join(sequenceBarcodesDict.values())
+            return '-'.join(sequenceBarcodesDict.values())
 
 
 
@@ -396,15 +384,15 @@ class BarcodeParser:
         self.add_group_barcode_type()
         self.add_barcode_name_dict()
 
-        # dictionary where keys are file name prefixes indicating the barcodes and values are file objects corresponding to those prefixes
+        # dictionary where keys are file name parts indicating the barcodes and values are file objects corresponding to those file name parts
             # file objects are only created if the specific barcode combination is seen
         outFileDict = {}
         
         # columns names for dataframe to be generated from rows output by id_seq_barcodes
-        colNames = ['output_file_prefix', 'count']
+        colNames = ['output_file_barcodes', 'count']
 
         # column names and dictionary for grouping rows in final dataframe
-        groupByColNames = ['output_file_prefix']
+        groupByColNames = ['output_file_barcodes']
         sumColsDict = {'count':'sum'}
 
         for barcodeType in self.barcodeDicts:
@@ -415,35 +403,40 @@ class BarcodeParser:
                 sumColsDict[col] = 'sum'
 
         rows = []
+        os.makedirs(outputDir, exist_ok=True)
 
         for BAMentry in bamfile.fetch(self.reference.id):
+            refAln = self.align_reference(BAMentry)
+            outputBarcodes, BAMentryBarcodeData = self.id_seq_barcodes(refAln, BAMentry)
             try:
-                refAln = self.align_reference(BAMentry)
-            except:
-                print(BAMentry)
-            outputPrefix, BAMentryBarcodeData = self.id_seq_barcodes(refAln, BAMentry)
-            try:
-                outFileDict[outputPrefix].write(BAMentry)
+                outFileDict[outputBarcodes].write(BAMentry)
             except KeyError:
-                fName = os.path.join(outputDir,f'{outputPrefix}_{self.tag}.bam')
-                outFileDict[outputPrefix] = pysam.AlignmentFile(fName, 'wb', template=bamfile)
-                outFileDict[outputPrefix].write(BAMentry)
+                fName = os.path.join(outputDir, f'{self.tag}_{outputBarcodes}.bam')
+                outFileDict[outputBarcodes] = pysam.AlignmentFile(fName, 'wb', template=bamfile)
+                outFileDict[outputBarcodes].write(BAMentry)
             count = 1
-            rows.append([outputPrefix,count] + BAMentryBarcodeData)
+            rows.append([outputBarcodes,count] + BAMentryBarcodeData)
 
         for sortedBAM in outFileDict:
             outFileDict[sortedBAM].close()
 
         demuxStats = pd.DataFrame(rows, columns=colNames)
         demuxStats = demuxStats.groupby(groupByColNames).agg(sumColsDict).reset_index()
-
-
         demuxStats.to_csv(os.path.join(outputDir, f'{self.tag}_demuxStats.csv'))
 
+        # move files with sequence counts below the set threshold to a subdirectory
+        demuxStatsLowCount = demuxStats[demuxStats['count']<config['demux_threshold']]
+        if len(demuxStatsLowCount) > 0:
+            lowCountDir = os.path.join(outputDir, 'lowCount')
+            os.makedirs(lowCountDir, exist_ok=True)
+            for row in demuxStatsLowCount.itertuples():
+                original = os.path.join(outputDir, f'{self.tag}_{row.output_file_barcodes}.bam')
+                target = os.path.join(lowCountDir, f'{self.tag}_{row.output_file_barcodes}.bam')
+                shutil.move(original, target)
 
-def main():
-    bcp = BarcodeParser(config['runs'], tag)
-    bcp.demux_BAM(BAMin, outputDir)
+        # create flag text file for pipeline
+        with open(os.path.join(outputDir, f'{self.tag}_demultiplex_complete.txt'), 'x') as f:
+            f.write(f'checkpoint flag file, do not delete or move without also deleting all demux output files for tag {self.tag}')
 
 if __name__ == '__main__':
     main()

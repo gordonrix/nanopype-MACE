@@ -66,6 +66,26 @@ def get_batches_basecaller2(wildcards):
     return batches
 
 if config['do_basecalling']:
+
+    rule megalodon:
+        input:
+            runDir = lambda wildcards: os.path.join(config['storage_data_raw'], config['runs'][wildcards.tag]['runname']),
+            reference = 'ref/trpB_nanopore_reference.fasta'
+        output:
+            outDir = directory('megalodon/{tag, [^\/_]*}'),
+            done = 'megalodon/{tag, [^\/_]*}/done.txt'
+        threads: 4
+        params:
+            guppy_config = lambda wildcards: config.get('basecalling_guppy_config')
+        resources:
+            GPU=1,
+            threads=4
+        shell:
+            """
+            megalodon {input.runDir} --reference {input.reference} --output-directory {output.outDir} --guppy-config {params.guppy_config} --overwrite --guppy-server-path ~/miniconda3/envs/megalodontest/bin/guppy_basecall_server --processes {threads} --guppy-timeout 1000.0 --outputs basecalls mappings
+            touch {output}
+            """
+
     # guppy basecalling
     rule guppy:
         input:
@@ -144,72 +164,85 @@ rule basecaller_merge_tag:
                 with open(f, 'rb') as fp_in:
                     fp_out.write(fp_in.read())
 
-rule unpack_sequences:
+rule UMI_extract:
     input:
         'sequences/{tag}.fastq.gz'
     output:
-        'sequences/{tag, [^\/_]*}.fastq'
-    shell:
-        """
-        gunzip -k {input}
-        """
-
-rule reorient_reads:
-    input:
-        'sequences/{tag}.fastq'
-    output:
-        'sequences/{tag, [^\/_]*}_reoriented.fastq'
+        extracted = 'sequences/{tag, [^\/_]*}_UMI-extract.fastq.gz',
+        log = 'sequences/{tag, [^\/_]*}_UMI-extract.csv'
+    params:
+        fwd_regex_pattern = lambda wildcards: config['fwd_regex_pattern'],
+        rvs_regex_pattern = lambda wildcards: config['rvs_regex_pattern']
     script:
-        'utils/reorient_reads.py'
+        'utils/UMI_extract.py'
 
-rule reverse_complement:
-    input:
-        'sequences/{tag}_reoriented.fastq'
-    output:
-        'sequences/{tag, [^\/_]*}_reoriented_RC.fastq'
-    run:
-        from Bio import SeqIO
-        inputSeqIterator = SeqIO.parse(open(input[0], 'r'), format='fastq')
-        RCseqIterator = (record.reverse_complement(id=record.id+'-revcomp') for record in inputSeqIterator)
-        with open(output[0], 'w') as out:
-            SeqIO.write(sequences=RCseqIterator, handle=out, format='fastq')
+# rule unpack_sequences:
+#     input:
+#         'sequences/{tag}.fastq.gz'
+#     output:
+#         'sequences/{tag, [^\/_]*}.fastq'
+#     shell:
+#         """
+#         gunzip -k {input}
+#         """
 
-rule UMI_cluster:
-    input:
-        F = 'sequences/{tag}_reoriented.fastq',
-        R = 'sequences/{tag}_reoriented_RC.fastq'
-    output:
-        'sequences/{tag, [^\/_]*}.cluster'
-    params:
-        outDir = lambda wildcards, output: str(output).split('/')[:-1],
-        outPrefix = lambda wildcards: wildcards.tag+'.',
-        inputFileNameF = lambda wildcards, input: str(input.F).split('/')[-1],
-        inputFileNameR = lambda wildcards, input: str(input.R).split('/')[-1]
-    shell:
-        """
-        cd {params.outDir}
-        calib -f {params.inputFileNameF} -r {params.inputFileNameR} -o {params.outPrefix} -l 6 -e 2 -k 8 -t 2 -m 7
-        cd ..
-        """
+# rule reorient_reads:
+#     input:
+#         'sequences/{tag}.fastq'
+#     output:
+#         'sequences/{tag, [^\/_]*}_reoriented.fastq'
+#     script:
+#         'utils/reorient_reads.py'
 
-rule UMI_consensus:
-    input:
-        cluster = 'sequences/{tag}.cluster',
-        F = 'sequences/{tag}_reoriented.fastq',
-        R = 'sequences/{tag}_reoriented_RC.fastq'
-    output:
-        Fcons = 'sequences/{tag, [^\/_]*}_Fconsensus.fastq.gz',
-        Fmsa = 'sequences/{tag, [^\/_]*}_Fconsensus.msa',
-        Rcons = 'sequences/{tag, [^\/_]*}_Rconsensus.fastq',
-        Rmsa = 'sequences/{tag, [^\/_]*}_Rconsensus.msa'
-    params:
-        Fprefix = lambda wildcards, output: str(output.Fcons).split('.fastq')[:-1],
-        Rprefix = lambda wildcards, output: str(output.Rcons).split('.fastq')[:-1]
-    shell:
-        """
-        calib_cons -c {input.cluster} -q {input.F} {input.R} -o {params.Fprefix} {params.Rprefix}
-        gzip {output.Fcons[:-2]}
-        """
+# rule reverse_complement:
+#     input:
+#         'sequences/{tag}_reoriented.fastq'
+#     output:
+#         'sequences/{tag, [^\/_]*}_reoriented_RC.fastq'
+#     run:
+#         from Bio import SeqIO
+#         inputSeqIterator = SeqIO.parse(open(input[0], 'r'), format='fastq')
+#         RCseqIterator = (record.reverse_complement(id=record.id+'-revcomp') for record in inputSeqIterator)
+#         with open(output[0], 'w') as out:
+#             SeqIO.write(sequences=RCseqIterator, handle=out, format='fastq')
+
+# rule UMI_cluster:
+#     input:
+#         F = 'sequences/{tag}_reoriented.fastq',
+#         R = 'sequences/{tag}_reoriented_RC.fastq'
+#     output:
+#         'sequences/{tag, [^\/_]*}.cluster'
+#     params:
+#         outDir = lambda wildcards, output: str(output).split('/')[:-1],
+#         outPrefix = lambda wildcards: wildcards.tag+'.',
+#         inputFileNameF = lambda wildcards, input: str(input.F).split('/')[-1],
+#         inputFileNameR = lambda wildcards, input: str(input.R).split('/')[-1]
+#     shell:
+#         """
+#         cd {params.outDir}
+#         calib -f {params.inputFileNameF} -r {params.inputFileNameR} -o {params.outPrefix} -l1  -e 2 -k 8 -t 2 -m 7
+#         cd ..
+#         """
+
+# rule UMI_consensus:
+#     input:
+#         cluster = 'sequences/{tag}.cluster',
+#         F = 'sequences/{tag}_reoriented.fastq',
+#         R = 'sequences/{tag}_reoriented_RC.fastq'
+#     output:
+#         Fcons = 'sequences/{tag, [^\/_]*}_Fconsensus.fastq',
+#         FconsGZ = 'sequences/{tag, [^\/_]*}_Fconsensus.fastq.gz',
+#         Fmsa = 'sequences/{tag, [^\/_]*}_Fconsensus.msa',
+#         Rcons = 'sequences/{tag, [^\/_]*}_Rconsensus.fastq',
+#         Rmsa = 'sequences/{tag, [^\/_]*}_Rconsensus.msa'
+#     params:
+#         Fprefix = 'sequences/{tag, [^\/_]*}_Fconsensus',
+#         Rprefix = 'sequences/{tag, [^\/_]*}_Rconsensus'
+#     shell:
+#         """
+#         calib_cons -c {input.cluster} -q {input.F} {input.R} -o {params.Fprefix} {params.Rprefix}
+#         gzip -k {output.Fcons}
+#         """
 
 # # get alignment batches
 # def get_batches_aligner(wildcards, config):
@@ -308,7 +341,7 @@ if config['demux']:
             bam = 'demux/{tag}_{barcodes}.bam',
             bai = 'demux/{tag}_{barcodes}.bam.bai'
         output:
-            expand('mutation_data/{{tag, [^\/]*}}_{{barcodes}}_{datatype}', datatype = ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.bam', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv'])
+            expand('mutation_data/{{tag, [^\/]*}}_{{barcodes}}_{datatype}', datatype = ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv'])
         script:
             'utils/mutation_analysis.py'
 
@@ -318,12 +351,12 @@ else:
             bam = 'alignments/{tag}.bam',
             bai = 'alignments/{tag}.bam.bai'
         output:
-            expand('mutation_data/{{tag, [^\/]*}}_{{barcodes}}_{datatype}', datatype = ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.bam', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv'])
+            expand('mutation_data/{{tag, [^\/]*}}_{{barcodes}}_{datatype}', datatype = ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['highest-abundance-alignments.txt', 'genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv'])
         script:
             'utils/mutation_analysis.py'
 
 def mut_stats_input(wildcards):
-    datatypes = ['genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['genotypes.csv', 'failures.bam', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv']
+    datatypes = ['genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv', 'AA-muts-aggregated.csv', 'AA-muts-distribution.csv'] if config['do_AA_analysis'] else ['genotypes.csv', 'failures.csv', 'NT-muts-aggregated.csv', 'NT-muts-distribution.csv']
     if config['demux']:
         checkpoint_demux_output = checkpoints.demultiplex.get(tag=wildcards.tag).output[0]
         checkpoint_demux_prefix = checkpoint_demux_output.split(f'demultiplex_complete')[0]
@@ -359,7 +392,8 @@ def plot_mutations_aggregated_input(wildcards):
 
 rule plot_mutations_aggregated:
     input:
-        plot_mutations_aggregated_input
+        aggregated = plot_mutations_aggregated_input,
+        mutStats = '{tag}_mutation-stats.csv'
     output:
         'plots/{tag, [^\/]*}_{AAorNT}-mutations-aggregated.html'
     script:

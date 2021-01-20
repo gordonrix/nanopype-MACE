@@ -91,11 +91,9 @@ rule default:
 
 rule all:
     input:
-        "bin/deepbinner",
         "bin/guppy_basecaller",
         "bin/minimap2",
-        "bin/samtools",
-        "bin/nanopolish"
+        "bin/samtools"
 
 
 # helper functions
@@ -463,10 +461,11 @@ rule guppy:
         # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.0.3_linux64.tar.gz &&
         # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.1.5_linux64.tar.gz &&
         # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.4.4_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_4.0.11_linux64.tar.gz &&
         mkdir -p src/guppy && cd src/guppy && rm -rf *
-        wget -q https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_4.0.11_linux64.tar.gz
-        tar -xzkf ont-guppy-cpu_4.0.11_linux64.tar.gz -C ./ --strip 1 && \
-        rm ont-guppy-cpu_4.0.11_linux64.tar.gz
+        wget -q https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_4.4.1_linux64.tar.gz
+        tar -xzkf ont-guppy-cpu_4.4.1_linux64.tar.gz -C ./ --strip 1 && \
+        rm ont-guppy-cpu_4.4.1_linux64.tar.gz
         # copy everything except toplevel softlinks e.g.
         # skip libhdf5.so
         # copy libhdf5.so.1.8.11

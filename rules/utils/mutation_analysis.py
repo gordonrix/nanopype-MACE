@@ -1,5 +1,6 @@
 from Bio.Seq import Seq
 from Bio import SeqIO
+import Bio
 import numpy as np
 import pandas as pd
 import re
@@ -87,11 +88,11 @@ class MutationAnalysis:
         """
 
         if BAMentry.reference_name != self.ref.id:
-            self.alignmentFailureReason = 'alignment uses wrong reference sequence'
+            self.alignmentFailureReason = ('alignment uses wrong reference sequence', 'N/A')
             return None
         
         if BAMentry.reference_length != len(self.ref.seq):
-            self.alignmentFailureReason = 'length of alignment different from reference'
+            self.alignmentFailureReason = ('length of alignment different from reference', 'N/A')
             return None
 
         refIndex = 0
@@ -130,6 +131,7 @@ class MutationAnalysis:
                 refAln += self.refStr[refIndex:refIndex+cTuple[1]]
                 queryAln += '-'*cTuple[1]
                 alignStr += ' '*cTuple[1]
+                queryQualities += [0]*cTuple[1]
                 deletions.append((refIndex-self.refTrimmedStart, cTuple[1]))
                 refIndex += cTuple[1]
 
@@ -182,6 +184,7 @@ class MutationAnalysis:
                     firstCodon = int(protIndexStart/3)
                     lastCodon = int(protIndexEnd/3)
                     indelCodons.extend([i for i in range(firstCodon,lastCodon+1)])
+            self.indelCodons = indelCodons
             AAmutArray = np.zeros((int(len(self.refProtein)/3), len(self.AAs)), dtype=int)
         else:
             AAmutArray = None
@@ -208,14 +211,14 @@ class MutationAnalysis:
             if self.doAAanalysis and self.refProteinStart <= i < self.refProteinEnd:
 
                 protIndex = i-self.refProteinStart
-                codon = int(protIndex/3)
+                codon = int(protIndex/3) # 0-index amino acid position
                 if codon in codonsChecked: continue
                 codonsChecked.append(codon)
                 codonPosi = protIndex%3
                 codonIndices = list(range(i-codonPosi, i+(3-codonPosi)))
 
                 # check that codon doesn't contain any bases influenced by an indel
-                if any(i in codonIndices for i in indelCodons): continue
+                if codon in indelCodons: continue
 
                 #check that all three quality scores in codon are above threshold
                 QStooLow = False
@@ -266,20 +269,21 @@ class MutationAnalysis:
             genotypesColumns.extend(['AA_substitutions_nonsynonymous', 'AA_substitutions_synonymous'])
             wildTypeRow.extend(['', ''])
 
-        for bamEntry in pysam.AlignmentFile(self.BAMin, 'rb'):
+        bamFile = pysam.AlignmentFile(self.BAMin, 'rb')
+        for bamEntry in bamFile:
             cleanAln = self.clean_alignment(bamEntry)
             if cleanAln:
-                seqNTmutArray, seqAAmutArray, seqGenotype = self.ID_muts(cleanAln)
+                seqNTmutArray, seqAAmutArray, seqGenotype = self.ID_muts(cleanAln)                    
             else:
                 failuresList.append([bamEntry.query_name, self.alignmentFailureReason[0], self.alignmentFailureReason[1]])
                 continue
 
             seqTotalNTmuts = sum(sum(seqNTmutArray))
-            seqTotalAAmuts = sum(sum(seqAAmutArray))
             NTmutArray += seqNTmutArray
             NTmutDist[seqTotalNTmuts] += 1
             if self.doAAanalysis:
                 AAmutArray += seqAAmutArray
+                seqTotalAAmuts = sum(sum(seqAAmutArray))
                 AAmutDist[seqTotalAAmuts] += 1
 
             if all(mutType=='' for mutType in seqGenotype):     # keep a counter for wild type sequences instead of adding them to genotypes dataframe
@@ -306,7 +310,7 @@ class MutationAnalysis:
         topHitsDF = genotypesDFcondensed.iloc[0:self.highestAbundanceGenotypes+1,]
         seqIDlist = []
         with open(self.outputList[0], 'w') as txtOut:
-            nameIndexedBAM = pysam.IndexedReads(pysam.AlignmentFile(self.BAMin, 'rb'))
+            nameIndexedBAM = pysam.IndexedReads(bamFile)
             nameIndexedBAM.build()
             for row in topHitsDF.itertuples():
                 if row.genotype=='wildtype':
@@ -317,7 +321,7 @@ class MutationAnalysis:
                 for BAMentry in iterator:
                     break
                 ref, alignString, seq, _, _, _ = self.clean_alignment(BAMentry)
-                txtOut.write(f'Genotype {row.genotype} representative sequence\n')
+                txtOut.write(f'Genotype {row.genotype} representative sequence. Sequence ID: {seqID}\n')
                 for string in [ref, alignString, seq]:
                     txtOut.write(string+'\n')
                 txtOut.write('\n')
@@ -337,8 +341,9 @@ class MutationAnalysis:
 
         genotypesDFcondensed.to_csv(self.outputList[1], index=False)
         failuresDF.to_csv(self.outputList[2], index=False)
-        NTmutDF.to_csv(self.outputList[3], index=False)
-        NTdistDF.to_csv(self.outputList[4], index=False)
+        NTmutDF.index.name = 'NT_mutation_count'
+        NTmutDF.to_csv(self.outputList[3])
+        NTdistDF.to_csv(self.outputList[4])
         
         if self.doAAanalysis:
             resiIDs = list(str(Seq(self.refProtein).translate()))
@@ -349,12 +354,12 @@ class MutationAnalysis:
             AAmutDF['wt_residues'] = pd.Series(WTresis)
             AAmutDF.set_index('wt_residues', inplace=True)
             AAmutDF = AAmutDF.transpose()
+            AAmutDF.index.name = 'AA_mutation_count'
+            AAmutDF.to_csv(self.outputList[5])
 
             AAdistDF = pd.DataFrame(AAmutDist, columns=['seqs_with_n_AAsubstitutions'])
             AAdistDF.index.name = 'n'
-
-            AAmutDF.to_csv(self.outputList[5], index=False)
-            AAdistDF.to_csv(self.outputList[6], index=False)
+            AAdistDF.to_csv(self.outputList[6])
 
 if __name__ == '__main__':
     main()

@@ -1,5 +1,5 @@
 # Raw sequencing data parent directory containing one folder per flow cell, set if using .fast5 as input
-storage_data_raw : data/
+storage_data_raw : data
 
 # Type of input being used. If .fast5 files not used, set to base_called and place .fastq.gz file in the sequences/ directory
 # if .fast5 file used, set to 'raw' and place .fast5 files in /data/{run_name}/reads/ directory
@@ -33,17 +33,19 @@ threads_asm: 4
 
 
 # basecalling
-do_basecalling: False                # set to True if basecalling needs to be run
+do_basecalling: True                # set to True if basecalling needs to be run
 # config file for guppy basecalling
-basecalling_guppy_config: 'dna_r9.4.1_450bps_fast.cfg'
+basecalling_guppy_config: 'dna_r9.4.1_450bps_hac.cfg'
 # quality qscore filter for guppy. 0 means all reads are written to the output
 basecalling_guppy_qscore_filter: 0
 # command line flags directly passed to guppy
 basecalling_guppy_flags: ''
 
 # UMI clustering and consensus
-UMI_consensus: False
-consistent_orientation: False   # Whether or not reads are all in the same orientation. If set to False, prior to UMI clustering and consensus calling, ends of sequences will be aligned, and these alignments will be used to flip the orientation of sequences that are not in the same orientation as the reference sequence. If set to False, must assign sequence(s) to use for alignment of ends using `orientation_alignment_sequence_f` and `orientation_alignment_sequence_r` for each specific run
+UMI_consensus: True
+fwd_regex_pattern: 'GG(?P<umi_1>.{4}T.{4}T.{4})AC.{1288,1388}AC(?P<umi_2>.{4}A.{4}A.{4}A.{4})CA'
+rvs_regex_pattern: 'TG(?P<umi_2>.{4}T.{4}T.{4}T.{4})GT.{1288,1388}GT(?P<umi_1>.{4}A.{4}A.{4})CC'
+# consistent_orientation: False   # Whether or not reads are all in the same orientation. If set to False, prior to UMI clustering and consensus calling, ends of sequences will be aligned, and these alignments will be used to flip the orientation of sequences that are not in the same orientation as the reference sequence. If set to False, must assign sequence(s) to use for alignment of ends using `orientation_alignment_sequence_f` and `orientation_alignment_sequence_r` for each specific run
 
 
 # alignment flags for samtools e.g. -F 2304 for RNA alignment
@@ -59,7 +61,7 @@ alignment_ngmlr_flags: '-x ont --bam-fix'
 
 # demux
 demux: True
-demux_threshold: 300  # count threshold for carrying through to subsequent rules. A demultiplexed file must contain at least this many sequences for further processing
+demux_threshold: 10  # count threshold for carrying through to subsequent rules. A demultiplexed file must contain at least this many sequences for further processing
 demux_batch_size: 4000
 demux_default: 'custom'
 deepbinner_models:
@@ -71,38 +73,100 @@ demux_seq_tag : 'default'
 demux_guppy_kits : 'EXP-NBD104'
 
 # mutation analysis
-mutation_analysis_quality_score_minimum: 20 # Minimum quality score needed for mutation to be counted. For amino acid level analysis, all nucleotides in the codon must be above the threshold for the mutation to be counted
+mutation_analysis_quality_score_minimum: 5 # Minimum quality score needed for mutation to be counted. For amino acid level analysis, all nucleotides in the codon must be above the threshold for the mutation to be counted
 sequence_length_threshold: 0.1              # Proportion of sequence length to be used as threshold for discarding sequences that are of abberant length. Ex. if set to 0.1 and length of trimmed reference sequence is 1000 bp, then all sequences either below 900 or above 1100 bp will not be analyzed
-do_AA_analysis: True                        # If set to false, only nucleotide-level analysis will be generated. If set to true, AA-level analysis generated as well and, to prevent mismatch between nucleotide and amino acid -level analysis, sequences that do not pass AA-level quality checks will not be analyzed
+do_AA_analysis: False                        # If set to False, only nucleotide-level analysis will be generated. If set to true, AA-level analysis generated as well and, to prevent mismatch between nucleotide and amino acid -level analysis, sequences that do not pass AA-level quality checks will not be analyzed (e.g. sequences with frameshift mutations)
 auto_detect_longest_ORF: False               # If set to true, automatically detects the longest ORF that can be identified in the reference sequence to use for protein level analysis. If analysis of a different protein sequence is desired, (e.g. shorter than full gene, so start or stop codon are not included) set to False and provide protein sequence as third reference in reference fasta file
 highest_abundance_genotypes: 5                # number of most frequently appearing genotypes to find a representative sequence for and write the alignment (output of clean_alignment method) to a file. Sequence with the highest average quality score will be chosen. 
 
 # mutation statistics
 unique_genotypes_count_threshold: 5         # minimum number of reads of a particular genotype for that genotype to be included in unique genotypes count
 
-# plot_distributions
+# plot_mutation_distributions
 percentile: 90                      # percentile of mutation distribution to show. X axis of plot will be 1.5x this percentile for the maximum of all distributions for the tag
+
+# plot_mutations_aggregated
+mutations_aggregated_Yaxis_absolute: False                 # display raw mutation counts on y axis. If set to False, y axis displays proportion of sequences with each mutation (total mutation / total sequences). If set to True, y axis displays total number of each mutation.
 
 # plot_mut_spectrum
     # barcode group name to be used as the background for calculating the mutation spectrum
     #   to use, this barcode group name must be present within all samples being analyzed
-background: background
+background: Y390-1000
 
 # runs to be analyzed
 runs:
     # tag, a short name to describe data, which will be present in all downstream file names
-    trpB:
+    # trpB:
+    #     # name of folder that holds raw data in a reads folder ( data/{runname}/reads/ )
+    #     runname: P0
+    #     # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
+    #     #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
+    #     #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc.
+    #     #   Third sequence is optional, see `auto_detect_longest_ORF`
+    #     reference: ref/TrpB.fasta
+
+    #     # Sequence(s) to use for distinguishing forward and reverse orientations. For each, copy/paste subsequence from reference sequence that are present in forward and/or reverse primers and are distinct from the opposite orientation. Only necessary if consistent_orientation = False. Only one is necessary, but providing both forward and reverse will improve accuracy. Alignment of 10000 sequences for both forward and reverse sequences of length 8 takes ~7 seconds, and scales somewhat linear with sequence length, so be conservative if possible
+    #     orientation_alignment_sequence_f: TCATAGAC
+    #     orientation_alignment_sequence_r: GGGTGCTA
+
+    #     # list barcode types to be used for demuxing. Demux'd files are named according to these barcodes in the order provided
+    #     #   if (1) both sequence context and fasta files are provided, (2) context can be found within the reference sequence,
+    #     #   and (3) the fasta file can be located
+
+    #     barcodeInfo: # different types of barcodes present within each sequence, defined by the sequence context around the barcode location
+    #         fwd: 
+    #             context: NNNNNNCTC          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
+    #             fasta: ref/barcodes_6_52_992.fa
+    #             reverseComplement: False    # set to True if barcodes in fasta file are defined as 5' to 3'. Default, False.
+    #             hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
+    #         rvs:
+    #             context: TAANNNNNN  
+    #             fasta: ref/barcodes_6_52_992.fa
+    #             reverseComplement: True
+    #             hammingDistance: 0
+    #         # lineage: # pre-encoded barcode, not added by primers. Uses a fasta file, with location defined by `fasta`, to identify barcodes. If the file does not already exist, it will first be created and filled with barcodes, and given names that include the number of sequences with each barcode
+    #         #     context: TGNNNNNNNNAA
+    #         #     fasta: ref/exampleBarcodes.fasta
+    #         #     reverseComplement: False
+    #     barcodeGroups:  # names demultiplexed files according to given name instead of using name(s) of individual barcodes. groups must use the same pattern of barcode types.
+    #                     #   For instance, if one group contains barcode designations for two barcodes types (e.g., fwd and rvs), then all other groups must contain barcode designations for those two barcode types
+    #         # ex1:
+    #         #     fwd: barcode1
+    #         #     rvs: barcode2
+    #         # ex2:
+    #         #     fwd: barcode1
+    #         #     rvs: barcode3
+    #         WT-Y391:
+    #             fwd: Barcode1
+    #             rvs: Barcode5
+    #         SAC6-611-REV1-633-Y392:
+    #             fwd: Barcode2
+    #             rvs: Barcode6
+    #         REV1-611-PSP2-633-Y393:
+    #             fwd: Barcode3
+    #             rvs: Barcode7
+    #         SAC6-611-PSP2-633-Y394:
+    #             fwd: Barcode4
+    #             rvs: Barcode8
+    #         SAC6-611-RAD27-633-Y396:
+    #             fwd: Barcode25
+    #             rvs: Barcode29
+    #         background:
+    #             fwd: Barcode26
+    #             rvs: Barcode30
+
+    1000reads-guppy:
         # name of folder that holds raw data in a reads folder ( data/{runname}/reads/ )
-        runname: P0
+        runname: testdir
         # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
         #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
         #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc.
         #   Third sequence is optional, see `auto_detect_longest_ORF`
-        reference: ref/TrpB.fasta
+        reference: ref/testTrpB.fasta
 
         # Sequence(s) to use for distinguishing forward and reverse orientations. For each, copy/paste subsequence from reference sequence that are present in forward and/or reverse primers and are distinct from the opposite orientation. Only necessary if consistent_orientation = False. Only one is necessary, but providing both forward and reverse will improve accuracy. Alignment of 10000 sequences for both forward and reverse sequences of length 8 takes ~7 seconds, and scales somewhat linear with sequence length, so be conservative if possible
-        orientation_alignment_sequence_f: TCATAGAC
-        orientation_alignment_sequence_r: GGGTGCTA
+        orientation_alignment_sequence_f: GTATCGTG
+        orientation_alignment_sequence_r: CGATCACT
 
         # list barcode types to be used for demuxing. Demux'd files are named according to these barcodes in the order provided
         #   if (1) both sequence context and fasta files are provided, (2) context can be found within the reference sequence,
@@ -110,42 +174,57 @@ runs:
 
         barcodeInfo: # different types of barcodes present within each sequence, defined by the sequence context around the barcode location
             fwd: 
-                context: NNNNNNCTC          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
-                fasta: ref/barcodes_6_52_992.fa
+                context: ACNNNNNNGT          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
+                fasta: ref/barcodes_6_trimmed.fa
                 reverseComplement: False    # set to True if barcodes in fasta file are defined as 5' to 3'. Default, False.
-                hammingDistance: 0          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
+                hammingDistance: 1          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
             rvs:
-                context: TAANNNNNN  
-                fasta: ref/barcodes_6_52_992.fa
+                context: CTNNNNNNGT  
+                fasta: ref/barcodes_6_trimmed.fa
                 reverseComplement: True
-                hammingDistance: 0
+                hammingDistance: 1
             # lineage: # pre-encoded barcode, not added by primers. Uses a fasta file, with location defined by `fasta`, to identify barcodes. If the file does not already exist, it will first be created and filled with barcodes, and given names that include the number of sequences with each barcode
             #     context: TGNNNNNNNNAA
             #     fasta: ref/exampleBarcodes.fasta
             #     reverseComplement: False
         barcodeGroups:  # names demultiplexed files according to given name instead of using name(s) of individual barcodes. groups must use the same pattern of barcode types.
                         #   For instance, if one group contains barcode designations for two barcodes types (e.g., fwd and rvs), then all other groups must contain barcode designations for those two barcode types
-            # ex1:
-            #     fwd: barcode1
-            #     rvs: barcode2
-            # ex2:
-            #     fwd: barcode1
-            #     rvs: barcode3
-            WT-Y391:
+            Y390-1000:
                 fwd: Barcode1
-                rvs: Barcode5
-            SAC6-611-REV1-633-Y392:
-                fwd: Barcode2
+                rvs: Barcode2
+            A1-1000:
+                fwd: Barcode5
+                rvs: Barcode2
+            C1-1000:
+                fwd: Barcode5
                 rvs: Barcode6
-            REV1-611-PSP2-633-Y393:
-                fwd: Barcode3
-                rvs: Barcode7
-            SAC6-611-PSP2-633-Y394:
-                fwd: Barcode4
-                rvs: Barcode8
-            SAC6-611-RAD27-633-Y396:
-                fwd: Barcode25
-                rvs: Barcode29
-            background:
-                fwd: Barcode26
-                rvs: Barcode30
+            E1-1000:
+                fwd: Barcode5
+                rvs: Barcode10
+            G1-1000:
+                fwd: Barcode5
+                rvs: Barcode14
+            A1-100:
+                fwd: Barcode9
+                rvs: Barcode2
+            C1-100:
+                fwd: Barcode9
+                rvs: Barcode6
+            E1-100:
+                fwd: Barcode9
+                rvs: Barcode10
+            G1-100:
+                fwd: Barcode9
+                rvs: Barcode14
+            A1-10:
+                fwd: Barcode13
+                rvs: Barcode2
+            C1-10:
+                fwd: Barcode13
+                rvs: Barcode6
+            E1-10:
+                fwd: Barcode13
+                rvs: Barcode10
+            G1-10:
+                fwd: Barcode13
+                rvs: Barcode14
