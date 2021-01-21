@@ -188,6 +188,64 @@ rule vbz_compression:
         """
 
 # detailed build rules
+rule samtools:
+    input:
+        rules.htslib.output.src
+    output:
+        bin = "bin/samtools"
+    threads: config['threads_build']
+    shell:
+        """
+        mkdir -p src && cd src
+        if [ ! -d samtools ]; then
+            git clone https://github.com/samtools/samtools --branch 1.9 --depth=1 && cd samtools
+        else
+            cd samtools && git fetch --all --tags --prune && git checkout tags/1.9
+        fi
+        autoheader --warning=none && autoconf -Wno-syntax && ./configure && make -j{threads}
+        cp samtools ../../{output.bin}
+        """
+
+rule minimap2:
+    output:
+        bin = "bin/minimap2"
+    threads: config['threads_build']
+    shell:
+        """
+        mkdir -p src && cd src
+        if [ ! -d minimap2 ]; then
+            git clone https://github.com/lh3/minimap2 --branch v2.14 --depth=1 && cd minimap2
+        else
+            cd minimap2 && git fetch --all --tags --prune && git checkout tags/v2.14
+        fi
+        make clean && make -j{threads}
+        cp minimap2 ../../{output.bin}
+        """
+
+rule guppy:
+    output:
+        basecaller = "bin/guppy_basecaller",
+        barcoder = "bin/guppy_barcoder"
+    shell:
+        """
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.1_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.5_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.7_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.0.3_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.1.5_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.4.4_linux64.tar.gz &&
+        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_4.0.11_linux64.tar.gz &&
+        mkdir -p src/guppy && cd src/guppy && rm -rf *
+        wget -q https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy_4.4.1_linux64.tar.gz
+        tar -xzkf ont-guppy_4.4.1_linux64.tar.gz -C ./ --strip 1 && \
+        rm ont-guppy_4.4.1_linux64.tar.gz
+        # copy everything except toplevel softlinks e.g.
+        # skip libhdf5.so
+        # copy libhdf5.so.1.8.11
+        rsync --files-from=<(find . ! \( -type l -and -regex '^.*so$' \) -print) --links . ../../
+        rm -r *
+        """
+
 rule UCSCtools:
     output:
         "bin/bedGraphToBigWig"
@@ -226,40 +284,6 @@ rule htslib:
             cd htslib && git fetch --all --tags --prune && git checkout tags/1.9
         fi
         autoheader && autoconf && ./configure && make -j{threads}
-        """
-
-rule samtools:
-    input:
-        rules.htslib.output.src
-    output:
-        bin = "bin/samtools"
-    threads: config['threads_build']
-    shell:
-        """
-        mkdir -p src && cd src
-        if [ ! -d samtools ]; then
-            git clone https://github.com/samtools/samtools --branch 1.9 --depth=1 && cd samtools
-        else
-            cd samtools && git fetch --all --tags --prune && git checkout tags/1.9
-        fi
-        autoheader --warning=none && autoconf -Wno-syntax && ./configure && make -j{threads}
-        cp samtools ../../{output.bin}
-        """
-
-rule minimap2:
-    output:
-        bin = "bin/minimap2"
-    threads: config['threads_build']
-    shell:
-        """
-        mkdir -p src && cd src
-        if [ ! -d minimap2 ]; then
-            git clone https://github.com/lh3/minimap2 --branch v2.14 --depth=1 && cd minimap2
-        else
-            cd minimap2 && git fetch --all --tags --prune && git checkout tags/v2.14
-        fi
-        make clean && make -j{threads}
-        cp minimap2 ../../{output.bin}
         """
 
 rule graphmap:
@@ -447,30 +471,6 @@ rule flappie:
         mkdir -p build && cd build && rm -rf * && cmake -DCMAKE_BUILD_TYPE=Release -DOPENBLAS_ROOT=$install_prefix -DHDF5_ROOT=$install_prefix -G{config[build_generator]} $CMAKE_C_STANDARD_LIBRARIES ../
         cmake --build . --config Release -- -j {threads}
         cp flappie ../../../{output.bin}
-        """
-
-rule guppy:
-    output:
-        basecaller = "bin/guppy_basecaller",
-        barcoder = "bin/guppy_barcoder"
-    shell:
-        """
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.1_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.5_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_2.3.7_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.0.3_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.1.5_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_3.4.4_linux64.tar.gz &&
-        # wget https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-cpu_4.0.11_linux64.tar.gz &&
-        mkdir -p src/guppy && cd src/guppy && rm -rf *
-        wget -q https://mirror.oxfordnanoportal.com/software/analysis/ont-guppy-gpu_4.4.1_linux64.tar.gz
-        tar -xzkf ont-guppy-cpu_4.4.1_linux64.tar.gz -C ./ --strip 1 && \
-        rm ont-guppy-cpu_4.4.1_linux64.tar.gz
-        # copy everything except toplevel softlinks e.g.
-        # skip libhdf5.so
-        # copy libhdf5.so.1.8.11
-        rsync --files-from=<(find . ! \( -type l -and -regex '^.*so$' \) -print) --links . ../../
-        rm -r *
         """
 
 rule pychopper:
