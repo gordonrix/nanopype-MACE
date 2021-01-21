@@ -188,6 +188,21 @@ rule vbz_compression:
         """
 
 # detailed build rules
+rule htslib:
+    output:
+        src = directory("src/htslib")
+    threads: config['threads_build']
+    shell:
+        """
+        mkdir -p src && cd src
+        if [ ! -d htslib ]; then
+            git clone https://github.com/samtools/htslib --branch 1.9 --depth=1 && cd htslib
+        else
+            cd htslib && git fetch --all --tags --prune && git checkout tags/1.9
+        fi
+        autoheader && autoconf && ./configure && make -j{threads}
+        """
+
 rule samtools:
     input:
         rules.htslib.output.src
@@ -269,21 +284,6 @@ rule bedtools:
         fi
         make clean && make
         cp bin/bedtools ../../{output.bin}
-        """
-
-rule htslib:
-    output:
-        src = directory("src/htslib")
-    threads: config['threads_build']
-    shell:
-        """
-        mkdir -p src && cd src
-        if [ ! -d htslib ]; then
-            git clone https://github.com/samtools/htslib --branch 1.9 --depth=1 && cd htslib
-        else
-            cd htslib && git fetch --all --tags --prune && git checkout tags/1.9
-        fi
-        autoheader && autoconf && ./configure && make -j{threads}
         """
 
 rule graphmap:
