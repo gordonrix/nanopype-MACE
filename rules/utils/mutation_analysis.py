@@ -91,16 +91,20 @@ class MutationAnalysis:
             self.alignmentFailureReason = ('alignment uses wrong reference sequence', 'N/A')
             return None
         
-        if BAMentry.reference_length != len(self.ref.seq):
-            self.alignmentFailureReason = ('length of alignment different from reference', 'N/A')
+        if BAMentry.reference_start > self.refTrimmedStart:
+            self.alignmentFailureReason = ('alignment starts past trimmed reference start', 'N/A')
             return None
 
-        refIndex = 0
+        if BAMentry.reference_end < self.refTrimmedEnd:
+            self.alignmentFailureReason = ('alignment ends before trimmed reference end', 'N/A')
+            return None
+
+        refIndex = BAMentry.reference_start
         queryIndex = 0
-        refAln = ''
-        queryAln = ''
-        queryQualities = []
-        alignStr = ''
+        refAln = ' ' * refIndex  #pad beginning of alignment when alignment begins after beginning of reference
+        queryAln = ' ' * refIndex
+        queryQualities = [-1] * refIndex
+        alignStr = ' ' * refIndex
         insertions = [] # list of tuples where first element is index within trimmed reference, second element is sequence inserted
         deletions = []  # list of tuples where first element is index within trimmed reference, second element is number of bases deleted
 
@@ -117,14 +121,14 @@ class MutationAnalysis:
                 refIndex += cTuple[1]
                 queryIndex += cTuple[1]
 
-            elif cTuple[0] == 1: #insertion, not added to sequence to maintain alignment
+            elif cTuple[0] == 1: #insertion, not added to sequence to maintain alignment to reference
                 if self.config['do_AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
                     self.alignmentFailureReason = ('frameshift insertion', queryIndex)
                     return None
                 insertions.append((refIndex-self.refTrimmedStart, BAMentry.query_alignment_sequence[queryIndex:queryIndex+cTuple[1]]))
                 queryIndex += cTuple[1]
 
-            elif cTuple[0] == 2: #deletion, '-' added to sequence to maintain alignment
+            elif cTuple[0] == 2: #deletion, '-' added to sequence to maintain alignment to reference
                 if self.config['do_AA_analysis'] and cTuple[1]%3 != 0: # frameshift, discard sequence if protein sequence analysis is being done
                     self.alignmentFailureReason = ('frameshift deletion', queryIndex)
                     return None

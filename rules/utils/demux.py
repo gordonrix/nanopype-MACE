@@ -24,35 +24,34 @@ from Bio import Align, pairwise2, Seq
 from Bio.pairwise2 import format_alignment
 from Bio import SeqIO
 
-### Asign variables from config file and input
-config = snakemake.config
-tag = snakemake.wildcards.tag
-BAMin = str(snakemake.input)
-
-barcodeInfo = config['runs'][tag]['barcodeInfo']
-barcodeGroups = config['runs'][tag]['barcodeGroups']
-
-### Output variables
-outputDir = str(snakemake.output).split(f'/{tag}_demultiplex_complete')[0]
-
 def main():
-    bcp = BarcodeParser(config['runs'], tag)
+
+    ### Asign variables from config file and input
+    config = snakemake.config
+    tag = snakemake.wildcards.tag
+    BAMin = snakemake.input[0]
+
+    ### Output variables
+    outputDir = str(snakemake.output).split(f'/{tag}_demultiplex_complete')[0]
+
+    bcp = BarcodeParser(config, tag)
     bcp.demux_BAM(BAMin, outputDir)
 
 class BarcodeParser:
 
-    def __init__(self, runsConfig, tag):
+    def __init__(self, config, tag):
         """
         arguments:
 
-        runsConfig      - snakemake config dictionary for all runs
+        config          - snakemake config dictionary
         tag             - tag for which all BAM files will be demultiplexed, defined in config file
         """
+        self.config = config
         self.tag = tag
-        self.refSeqfasta = runsConfig[tag]['reference']
+        self.refSeqfasta = config['runs'][tag]['reference']
         self.reference = list(SeqIO.parse(self.refSeqfasta, 'fasta'))[0]
-        self.barcodeInfo = runsConfig[tag]['barcodeInfo']
-        self.barcodeGroups = runsConfig[tag]['barcodeGroups']
+        self.barcodeInfo = config['runs'][tag]['barcodeInfo']
+        self.barcodeGroups = config['runs'][tag]['barcodeGroups']
 
     @staticmethod
     def create_barcodes_dict(bcFASTA, revComp):
@@ -212,7 +211,7 @@ class BarcodeParser:
         location = sequence.find(context)
         if location == -1:
             self.failureReason = 'context_not_present_in_reference_sequence'
-            return None, None
+            return 'fail', 'fail'
         N_start = location + context.find('N')
         N_end = location + len(context) - context[::-1].find('N')
 
@@ -220,12 +219,12 @@ class BarcodeParser:
             return N_start, N_end
         else:
             self.failureReason = 'context_appears_in_reference_more_than_once'
-            return None, None
+            return 'fail', 'fail'
 
     def align_reference(self, BAMentry):
         """given a pysam.AlignmentFile BAM entry,
         builds the reference alignment string with indels accounted for"""
-        index = 0
+        index = BAMentry.reference_start
         refAln = ''
         for cTuple in BAMentry.cigartuples:
             if cTuple[0] == 0: #match
@@ -252,7 +251,7 @@ class BarcodeParser:
         for group in self.barcodeGroups:
             groupDict = self.barcodeGroups[group]
             if first:
-                for barcodeType in barcodeInfo: # add barcode types in the order they appear in barcodeInfo
+                for barcodeType in self.barcodeInfo: # add barcode types in the order they appear in barcodeInfo
                     if barcodeType in groupDict:
                         groupedBarcodeTypes.append(barcodeType)
                     else:
@@ -425,7 +424,7 @@ class BarcodeParser:
         demuxStats.to_csv(os.path.join(outputDir, f'{self.tag}_demuxStats.csv'))
 
         # move files with sequence counts below the set threshold to a subdirectory
-        demuxStatsLowCount = demuxStats[demuxStats['count']<config['demux_threshold']]
+        demuxStatsLowCount = demuxStats[demuxStats['count']<self.config['demux_threshold']]
         if len(demuxStatsLowCount) > 0:
             lowCountDir = os.path.join(outputDir, 'lowCount')
             os.makedirs(lowCountDir, exist_ok=True)

@@ -5,17 +5,6 @@ from rules.utils.storage import get_flowcell, get_kit, get_ID
 # local rules
 localrules: basecaller_merge_tag
 
-# check if tag maps to barcode PROBABLY NOT USEFUL
-def get_tag_barcode(tag, runname, config):
-    bc_batches = [None]
-    if '__default__' in config['barcodes']:
-        bc_batches.extend([config['barcodes']['__default__'][bc] for bc in config['barcodes']['__default__'].keys() if bc in tag])
-    elif runname in config['barcodes']:
-        bc_batches.extend([config['barcodes'][runname][bc] for bc in config['barcodes'][runname].keys() if bc in tag])
-    else:
-        pass
-    return bc_batches[-1]
-
 # get batch of reads as IDs or fast5
 def get_signal_batch(wildcards, config):
     raw_dir = config['storage_data_raw']
@@ -32,38 +21,31 @@ def get_signal_batch(wildcards, config):
         return []
 
 # prefix of raw read batches
-def get_batch_ids_raw(runname, config, tag=None, checkpoints=None):
-    tag_barcode = get_tag_barcode(tag, runname, config) if tag else None
-    if tag_barcode and checkpoints:
-        if hasattr(checkpoints, config['demux_default'] + '_barcode'):
-            barcode_batch_dir = getattr(checkpoints, config['demux_default'] + '_barcode').get(runname=runname).output.barcodes
-        else:
-            raise NotImplementedError("Demultiplexing with {} is not implemented.".format(config['demux_default']))
-        barcode_batch = os.path.join(barcode_batch_dir, tag_barcode, '{id}.txt')
-        batches_txt, = glob_wildcards(barcode_batch)
-        return batches_txt
-    else:
-        batches_tar, = glob_wildcards("{datadir}/{runname}/reads/{{id}}.tar".format(datadir=config["storage_data_raw"], runname=runname))
-        batches_fast5, = glob_wildcards("{datadir}/{runname}/reads/{{id}}.fast5".format(datadir=config["storage_data_raw"], runname=runname))
-        return batches_tar + batches_fast5
+def get_batch_ids_raw(config, tag, runname):
+    batches_tar, = glob_wildcards("{datadir}/{runname}/reads/{{id}}.tar".format(datadir=config["storage_data_raw"], runname=runname))
+    batches_fast5, = glob_wildcards("{datadir}/{runname}/reads/{{id}}.fast5".format(datadir=config["storage_data_raw"], runname=runname))
+    return batches_tar + batches_fast5
+
+def get_batch_ids_sequences(config, tag, runname):
+    batches_fastqgz, = glob_wildcards("sequences/batches/{tag}/{runname}/{{id}}.fastq.gz".format(tag=tag, runname=runname))
+    return batches_fastqgz
 
 # get batches
 def get_batches_basecaller(wildcards):
-    return expand("sequences/batches/{tag}/{runname}/{batch}.fastq.gz",
-                        tag = wildcards.tag,
-                        runname=config['runs'][wildcards.tag]['runname'],
-                        batch=get_batch_ids_raw(config['runs'][wildcards.tag]['runname'], config=config, tag=wildcards.tag, checkpoints=checkpoints))
-
-def get_batches_basecaller2(wildcards):
-    batches = []
-    for tag in config['runs']:
-        batches.extend(
-            expand("sequences/batches/{tag}/{runname}/{batch}.fastq.gz",
-                                tag=tag,
-                                runname=config['runs'][tag]['runname'],
-                                batch=get_batch_ids_raw(config['runs'][wildcards.tag]['runname'], config=config, tag=wildcards.tag, checkpoints=checkpoints))
-        )
-    return batches
+    output = []
+    for runname in config['runs'][wildcards.tag]['runname']:
+        if config['do_basecalling']:
+            outputs = expand("sequences/batches/{tag}/{runname}/{batch}.fastq.gz",
+                                tag = wildcards.tag,
+                                runname=runname,
+                                batch=get_batch_ids_raw(config, wildcards.tag, runname))
+        else:
+            outputs = expand("sequences/batches/{tag}/{runname}/{batch}.fastq.gz",
+                                tag = wildcards.tag,
+                                runname = runname,
+                                batch = get_batch_ids_sequences(config, tag, runname))
+        output.extend(outputs)
+    return output
 
 if config['do_basecalling']:
 
@@ -100,8 +82,7 @@ if config['do_basecalling']:
         resources:
             threads = lambda wildcards, threads: threads,
             mem_mb = lambda wildcards, threads, attempt: int((1.0 + (0.1 * (attempt - 1))) * (config['memory']['guppy_basecaller'][0] + config['memory']['guppy_basecaller'][1] * threads)),
-            time_min = lambda wildcards, threads, attempt: int((1440 / threads) * attempt * config['runtime']['guppy_basecaller']), # 90 min / 16 threads
-            GPU = 1
+            time_min = lambda wildcards, threads, attempt: int((1440 / threads) * attempt * config['runtime']['guppy_basecaller']) # 90 min / 16 threads
         params:
             guppy_config = lambda wildcards : '-c {cfg}{flags}'.format(
                                 cfg = config.get('basecalling_guppy_config') or 'dna_r9.4.1_450bps_fast.cfg',
@@ -124,139 +105,151 @@ if config['do_basecalling']:
             fi
             find ${{FASTQ_DIR}} -regextype posix-extended -regex '^.*f(ast)?q' -exec cat {{}} \; | gzip > {output[0]}
             find ${{FASTQ_DIR}} -name 'sequencing_summary.txt' -exec mv {{}} {output[1]} \;
-            if [ \'{params.mod_table}\' != '' ]; then
-                {config[bin_singularity][python]} {config[sbin_singularity][basecalling_guppy_mod.py]} extract `find workspace/ -name '*.fast5'` {params.mod_table}
-            fi
             """
     
-    rule basecaller_stats:
-        input:
-            lambda wildcards: get_batches_basecaller(wildcards)
-        output:
-            "sequences/batches/{tag}/{runname}.hdf5"
-        run:
-            import gzip
-            import pandas as pd
-            def fastq_iter(iterable):
-                while True:
-                    try:
-                        title = next(iterable)
-                        assert title[0] == '@'
-                        seq = next(iterable)
-                        _ = next(iterable)
-                        qual = next(iterable)
-                    except StopIteration:
-                        return
-                    mean_q = sum([ord(x) - 33 for x in qual]) / len(qual) if qual else 0.0
-                    yield len(seq), mean_q
-            line_iter = (line for f in input for line in gzip.open(f, 'rb').read().decode('utf-8').split('\n') if line)
-            df = pd.DataFrame(fastq_iter(line_iter), columns=['length', 'quality'])
-            df.to_hdf(output[0], 'stats')
+rule basecaller_stats:
+    input:
+        lambda wildcards: get_batches_basecaller(wildcards)
+    output:
+        "sequences/batches/{tag}/{runname}.hdf5"
+    run:
+        import gzip
+        import pandas as pd
+        def fastq_iter(iterable):
+            while True:
+                try:
+                    title = next(iterable)
+                    assert title[0] == '@'
+                    seq = next(iterable)
+                    _ = next(iterable)
+                    qual = next(iterable)
+                except StopIteration:
+                    return
+                mean_q = sum([ord(x) - 33 for x in qual]) / len(qual) if qual else 0.0
+                yield len(seq), mean_q
+        line_iter = (line for f in input for line in gzip.open(f, 'rb').read().decode('utf-8').split('\n') if line)
+        df = pd.DataFrame(fastq_iter(line_iter), columns=['length', 'quality'])
+        df.to_hdf(output[0], 'stats')
 
 rule basecaller_merge_tag:
     input:
         lambda wildcards: get_batches_basecaller(wildcards)
     output:
-        "sequences/{tag, [^\/_]*}.fastq.gz"
+        protected("sequences/{tag, [^\/_]*}.fastq.gz")
     run:
         with open(output[0], 'wb') as fp_out:
             for f in input:
                 with open(f, 'rb') as fp_in:
                     fp_out.write(fp_in.read())
 
+rule UMI_minimap2:
+    input:
+        sequence = 'sequences/{tag}.fastq.gz',
+        reference = lambda wildcards: config['runs'][wildcards.tag]['reference']
+    output:
+        pipe("sequences/UMI/{tag, [^\/_]*}_noConsensus.sam")
+    threads: config['threads_alignment']
+    group: "minimap2"
+    resources:
+        threads = lambda wildcards, threads: threads,
+        mem_mb = lambda wildcards, threads, attempt: int((1.0 + (0.2 * (attempt - 1))) * (config['memory']['minimap2'][0] + config['memory']['minimap2'][1] * threads)),
+        time_min = lambda wildcards, threads, attempt: int((960 / threads) * attempt * config['runtime']['minimap2'])   # 60 min / 16 threads
+    params:
+        tempRef = lambda wildcards: wildcards.tag.split('.f')[0] + 'tempRef.fasta'
+    singularity:
+        config['singularity_images']['alignment']
+    shell:
+        """
+        head -2 {input.reference} > {params.tempRef}
+        {config[bin_singularity][minimap2]} -t {threads} {config[alignment_minimap2_flags]} {params.tempRef} {input.sequence} 1>> {output} 2> >(tee {output}.log >&2)
+        if [ $(grep 'ERROR' {output}.log | wc -l) -gt 0 ]; then exit 1; else rm {output}.log; fi
+        rm {params.tempRef}
+        """
+
+# sam to bam conversion
+rule UMI_aligner_sam2bam:
+    input:
+        sam = "sequences/UMI/{tag}_noConsensus.sam"
+    output:
+        bam = temp("sequences/UMI/{tag, [^\/_]*}_noConsensus.bam"),
+        index = temp("sequences/UMI/{tag, [^\/_]*}_noConsensus.bam.bai")
+    shadow: "minimal"
+    threads: 1
+    resources:
+        threads = lambda wildcards, threads: threads,
+        mem_mb = lambda wildcards, attempt: int((1.0 + (0.2 * (attempt - 1))) * 5000)
+    singularity:
+        config['singularity_images']['alignment']
+    shell:
+        """
+        {config[bin_singularity][samtools]} view -b {input.sam} | {config[bin_singularity][samtools]} sort -m 4G > {output.bam}
+        {config[bin_singularity][samtools]} index {output.bam}
+        """
+
 rule UMI_extract:
     input:
-        'sequences/{tag}.fastq.gz'
+        bam = 'sequences/UMI/{tag}_noConsensus.bam',
+        index = "sequences/UMI/{tag}_noConsensus.bam.bai"
     output:
-        extracted = 'sequences/{tag, [^\/_]*}_UMI-extract.fastq.gz',
-        log = 'sequences/{tag, [^\/_]*}_UMI-extract.csv'
+        extracted = temp('sequences/UMI/{tag, [^\/_]*}_UMIextract.bam'),
+        index = temp('sequences/UMI/{tag, [^\/_]*}_UMIextract.bam.bai'),
+        log = 'sequences/UMI/{tag, [^\/_]*}_UMI-extract.csv'
     params:
-        fwd_regex_pattern = lambda wildcards: config['fwd_regex_pattern'],
-        rvs_regex_pattern = lambda wildcards: config['rvs_regex_pattern']
+        barcode_contexts = lambda wildcards: [config['runs'][wildcards.tag]['barcodeInfo'][barcodeType]['context'].upper() for barcodeType in config['runs'][wildcards.tag]['barcodeInfo']] if config['demux'] else None,
+        reference = lambda wildcards: config['runs'][wildcards.tag]['reference'],
+        UMI_contexts = lambda wildcards: config['runs'][wildcards.tag]['UMI_contexts']
     script:
         'utils/UMI_extract.py'
 
-# rule unpack_sequences:
-#     input:
-#         'sequences/{tag}.fastq.gz'
-#     output:
-#         'sequences/{tag, [^\/_]*}.fastq'
-#     shell:
-#         """
-#         gunzip -k {input}
-#         """
+rule UMI_group:
+    input:
+        bam = 'sequences/UMI/{tag}_UMIextract.bam',
+        index = 'sequences/UMI/{tag}_UMIextract.bam.bai'
+    output:
+        bam = temp('sequences/UMI/{tag, [^\/_]*}_UMIgroup.bam'),
+        index = temp('sequences/UMI/{tag, [^\/_]*}_UMIgroup.bam.bai'),
+        log = 'sequences/UMI/{tag, [^\/_]*}_UMIgroup-log.tsv'
+    shell:
+        """
+        umi_tools group -I {input.bam} --group-out={output.log} --output-bam --per-gene --gene-tag=GN --edit-distance-threshold 2 -S {output.bam}
+        samtools index {output.bam}
+        """
 
-# rule reorient_reads:
-#     input:
-#         'sequences/{tag}.fastq'
-#     output:
-#         'sequences/{tag, [^\/_]*}_reoriented.fastq'
-#     script:
-#         'utils/reorient_reads.py'
+rule plot_UMI_group:
+    input:
+        'sequences/UMI/{tag}_UMIgroup-log.tsv'
+    output:
+        csv = 'sequences/UMI/{tag, [^\/_]*}_UMIgroup-distribution.csv',
+        plot = 'plots/{tag, [^\/_]*}_UMIgroup-distribution.html'
+    script:
+        'utils/plot_UMI_groups_distribution.py'
 
-# rule reverse_complement:
-#     input:
-#         'sequences/{tag}_reoriented.fastq'
-#     output:
-#         'sequences/{tag, [^\/_]*}_reoriented_RC.fastq'
-#     run:
-#         from Bio import SeqIO
-#         inputSeqIterator = SeqIO.parse(open(input[0], 'r'), format='fastq')
-#         RCseqIterator = (record.reverse_complement(id=record.id+'-revcomp') for record in inputSeqIterator)
-#         with open(output[0], 'w') as out:
-#             SeqIO.write(sequences=RCseqIterator, handle=out, format='fastq')
+rule UMI_consensus:
+    input:
+        grouped = 'sequences/UMI/{tag}_UMIgroup.bam',
+        index = 'sequences/UMI/{tag}_UMIgroup.bam.bai',
+        log = 'sequences/UMI/{tag}_UMIgroup-log.tsv'
+    output:
+        temp('sequences/UMI/{tag, [^\/_]*}_UMIconsensus.fastq')
+    script:
+        'utils/UMI_consensus.py'
 
-# rule UMI_cluster:
-#     input:
-#         F = 'sequences/{tag}_reoriented.fastq',
-#         R = 'sequences/{tag}_reoriented_RC.fastq'
-#     output:
-#         'sequences/{tag, [^\/_]*}.cluster'
-#     params:
-#         outDir = lambda wildcards, output: str(output).split('/')[:-1],
-#         outPrefix = lambda wildcards: wildcards.tag+'.',
-#         inputFileNameF = lambda wildcards, input: str(input.F).split('/')[-1],
-#         inputFileNameR = lambda wildcards, input: str(input.R).split('/')[-1]
-#     shell:
-#         """
-#         cd {params.outDir}
-#         calib -f {params.inputFileNameF} -r {params.inputFileNameR} -o {params.outPrefix} -l1  -e 2 -k 8 -t 2 -m 7
-#         cd ..
-#         """
-
-# rule UMI_consensus:
-#     input:
-#         cluster = 'sequences/{tag}.cluster',
-#         F = 'sequences/{tag}_reoriented.fastq',
-#         R = 'sequences/{tag}_reoriented_RC.fastq'
-#     output:
-#         Fcons = 'sequences/{tag, [^\/_]*}_Fconsensus.fastq',
-#         FconsGZ = 'sequences/{tag, [^\/_]*}_Fconsensus.fastq.gz',
-#         Fmsa = 'sequences/{tag, [^\/_]*}_Fconsensus.msa',
-#         Rcons = 'sequences/{tag, [^\/_]*}_Rconsensus.fastq',
-#         Rmsa = 'sequences/{tag, [^\/_]*}_Rconsensus.msa'
-#     params:
-#         Fprefix = 'sequences/{tag, [^\/_]*}_Fconsensus',
-#         Rprefix = 'sequences/{tag, [^\/_]*}_Rconsensus'
-#     shell:
-#         """
-#         calib_cons -c {input.cluster} -q {input.F} {input.R} -o {params.Fprefix} {params.Rprefix}
-#         gzip -k {output.Fcons}
-#         """
-
-# # get alignment batches
-# def get_batches_aligner(wildcards, config):
-#     r = expand("alignments/batches/{tag}/{runname}/{batch}.bam",
-#                         tag=wildcards.tag,
-#                         runname=config['runs'][wildcards.tag]['runname'],
-#                         batch=get_batch_ids_raw(config['runs'][wildcards.tag]['runname'], config=config, tag=wildcards.tag, checkpoints=checkpoints))
-#     return r
-
-# minimap alignment
+rule UMI_compress:
+    input:
+        'sequences/UMI/{tag}_UMIconsensus.fastq'
+    output:
+        'sequences/{tag, [^\/_]*}_UMIconsensus.fastq.gz'
+    params:
+        temp = lambda wildcards: f'sequences/UMI/{wildcards.tag}_UMIconsensus.fastq.gz'
+    shell:
+        """
+        gzip {input}
+        mv {params.temp} {output}
+        """
 
 def alignment_sequence_input(wildcards):
     if config['UMI_consensus']:
-        return 'sequences/{tag}_Fconsensus.fastq'
+        return 'sequences/{tag}_UMIconsensus.fastq.gz'
     else:
         return 'sequences/{tag}.fastq.gz'
 
@@ -265,19 +258,23 @@ rule minimap2:
         sequence = alignment_sequence_input,
         reference = lambda wildcards: config['runs'][wildcards.tag]['reference']
     output:
-        pipe("alignments/{tag, [^\/]*}.sam")
+        pipe("alignments/{tag, [^\/_]*}.sam")
     threads: config['threads_alignment']
     group: "minimap2"
     resources:
         threads = lambda wildcards, threads: threads,
         mem_mb = lambda wildcards, threads, attempt: int((1.0 + (0.2 * (attempt - 1))) * (config['memory']['minimap2'][0] + config['memory']['minimap2'][1] * threads)),
         time_min = lambda wildcards, threads, attempt: int((960 / threads) * attempt * config['runtime']['minimap2'])   # 60 min / 16 threads
+    params:
+        tempRef = lambda wildcards: wildcards.tag.split('.f')[0] + 'tempRef.fasta'
     singularity:
         config['singularity_images']['alignment']
     shell:
         """
-        {config[bin_singularity][minimap2]} -t {threads} {config[alignment_minimap2_flags]} {input.reference} {input.sequence} 1>> {output} 2> >(tee {output}.log >&2)
+        head -2 {input.reference} > {params.tempRef}
+        {config[bin_singularity][minimap2]} -t {threads} {config[alignment_minimap2_flags]} {params.tempRef} {input.sequence} 1>> {output} 2> >(tee {output}.log >&2)
         if [ $(grep 'ERROR' {output}.log | wc -l) -gt 0 ]; then exit 1; else rm {output}.log; fi
+        rm {params.tempRef}
         """
 
 # sam to bam conversion
@@ -285,8 +282,8 @@ rule aligner_sam2bam:
     input:
         sam = "alignments/{tag}.sam"
     output:
-        bam = "alignments/{tag, [^\/]*}.bam",
-        bai = "alignments/{tag, [^\/]*}.bam.bai"
+        bam = "alignments/{tag, [^\/_]*}.bam",
+        bai = "alignments/{tag, [^\/_]*}.bam.bai"
     shadow: "minimal"
     threads: 1
     resources:

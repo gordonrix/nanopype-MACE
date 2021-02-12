@@ -239,27 +239,38 @@ config['runnames'] = [config['runs'][tag]['runname'] for tag in config['runs']]
 
 
 # check raw data archive
-if not os.path.exists(config['storage_data_raw']):
-    raise RuntimeError("[ERROR] Raw data archive not found.")
-else:
-    if config['input_type'] == 'raw':
-        config['storage_data_raw'] = config['storage_data_raw'].rstrip('/')
-        for tag in config['runs']:
-            loc = os.path.join(config['storage_data_raw'], config['runs'][tag]['runname'])
+if config['do_basecalling']:
+    if not os.path.exists(config['storage_data_raw']):
+        raise RuntimeError("[ERROR] Raw data archive not found.")
+    config['storage_data_raw'] = config['storage_data_raw'].rstrip('/')
+    for tag in config['runs']:
+        for runname in config['runs'][tag]['runname']:
+            loc = os.path.join(config['storage_data_raw'], config['runs'][tag]['runname'][runname])
             if not os.path.exists(loc):
                 print_("[WARNING] {runname} not found at {loc} and is not available in the workflow.".format(
                     runname=runname, loc=loc), file=sys.stderr)
             elif not os.path.exists(os.path.join(loc, 'reads')) or not os.listdir(os.path.join(loc, 'reads')):
                 print_("[WARNING] {runname} configured but with missing/empty reads directory.".format(
                     runname=runname), file=sys.stderr)
-    elif config['input_type'] == 'base_called':
-        for runname in config['runs']:
-            loc = os.path.join('sequences', config['runs'][runname]['fastq.gz'])
-            if not os.path.exists(loc):
-                print_("[WARNING] {runname} sequences file {loc} not found and is not available in the workflow.".format(
-                    runname=runname, loc=loc), file=sys.stderr)
+# check for sequences
+else:
+    for tag in config['runs']:
+        sequences = os.path.join('sequences', tag+'.fastq.gz')
+        if 'runname' not in config['runs'][tag]:
+            if not os.path.exists(sequences):
+                print_(f"[WARNING] `do_basecalling` set to False and runname director(y/ies) not set for {config['runs'][tag]}, but sequences file `{sequences}` not found", file=sys.stderr)
+        else:
+            if not os.path.exists(sequences):
+                for runname in config['runs'][tag]['runname']:
+                    batch = os.path.join('sequences', 'batches', tag, runname)
+                    if not os.path.exists(batch):
+                        print_(f"[WARNING] `do_basecalling` set to False, sequences file `{sequences}` not found, and basecalled sequence batch folder `{batch}` not found", file=sys.stderr)
 
+# ADD CHECKS FOR UMIS.
+#   - ensure both forward and reverse regexes only find a single match
 
+# ADD A CHECK FOR BARCODE INFO. If 'barcodeInfo' or 'barcodeGroups' is present in {tag}, both must be present and all barcode types in barcode groups
+# must be defined in 'barcodeInfo' dict. Probably did this in the beginning of the demux script, so can move that here.
 
 # mount raw storage and references if using singularity
 if hasattr(workflow, 'use_singularity') and workflow.use_singularity:
@@ -300,10 +311,7 @@ config['roi'] = roi
 
 # # include modules
 include : "rules/storage.smk"
-include : "rules/sv.smk"
-include : "rules/transcript.smk"
 include : "rules/clean.smk"
-include : "rules/asm.smk"
 include : "rules/report.smk"
 include : "rules/pipeline.smk"
 
@@ -368,9 +376,9 @@ If you need further assistance, feel free to open an issue at
 and attach the above Snakemake and Nanopype log files.""".format(log_name), file=sys.stderr)
 
 
-# rule targets:
-#     input:
-#         expand('{tag}_mutation-stats.csv', tag=config['runs'])
-        # expand('plots/{tag}_{AAorNT}-mutation-distributions.html', tag=config['runs'], AAorNT=['AA','NT'])
-# expand('plots/{tag}_{AAorNT}-mutation-spectrum.html', tag=config['runs'])
-# expand('plots/{tag}_{AAorNT}-mutations-aggregated.html', tag=config['runs'])
+rule targets:
+    input:
+        expand('{tag}_mutation-stats.csv', tag=config['runs']),
+        expand('plots/{tag}_{AAorNT}-mutation-distributions.html', tag=config['runs'], AAorNT=['AA','NT']),
+        expand('plots/{tag}_mutation-spectra.html', tag=config['runs']),
+        expand('plots/{tag}_{AAorNT}-mutations-aggregated.html', tag=config['runs'], AAorNT=['AA','NT'])
