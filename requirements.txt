@@ -10,3 +10,6 @@ svglib
 bokeh
 biopython
 umi_tools
+h5py >=2.7.1
+ont-fast5-api
+
