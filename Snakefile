@@ -245,7 +245,7 @@ if config['do_basecalling']:
     config['storage_data_raw'] = config['storage_data_raw'].rstrip('/')
     for tag in config['runs']:
         for runname in config['runs'][tag]['runname']:
-            loc = os.path.join(config['storage_data_raw'], config['runs'][tag]['runname'][runname])
+            loc = os.path.join(config['storage_data_raw'], runname)
             if not os.path.exists(loc):
                 print_("[WARNING] {runname} not found at {loc} and is not available in the workflow.".format(
                     runname=runname, loc=loc), file=sys.stderr)

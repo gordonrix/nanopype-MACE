@@ -8,10 +8,6 @@ localrules: basecaller_merge_tag
 # get batch of reads as IDs or fast5
 def get_signal_batch(wildcards, config):
     raw_dir = config['storage_data_raw']
-    if hasattr(wildcards, 'tag'):
-        tag_barcode = get_tag_barcode(wildcards.tag, wildcards.runname, config)
-        if tag_barcode:
-            return os.path.join('demux', config['demux_default'], 'barcodes', wildcards.runname, tag_barcode, wildcards.batch + '.txt')
     batch_file = os.path.join(raw_dir, wildcards.runname, 'reads', wildcards.batch)
     if os.path.isfile(batch_file + '.tar'):
         return batch_file + '.tar'
@@ -49,25 +45,6 @@ def get_batches_basecaller(wildcards):
 
 if config['do_basecalling']:
 
-    rule megalodon:
-        input:
-            runDir = lambda wildcards: os.path.join(config['storage_data_raw'], config['runs'][wildcards.tag]['runname']),
-            reference = 'ref/trpB_nanopore_reference.fasta'
-        output:
-            outDir = directory('megalodon/{tag, [^\/_]*}'),
-            done = 'megalodon/{tag, [^\/_]*}/done.txt'
-        threads: 4
-        params:
-            guppy_config = lambda wildcards: config.get('basecalling_guppy_config')
-        resources:
-            GPU=1,
-            threads=4
-        shell:
-            """
-            megalodon {input.runDir} --reference {input.reference} --output-directory {output.outDir} --guppy-config {params.guppy_config} --overwrite --guppy-server-path ~/miniconda3/envs/megalodontest/bin/guppy_basecall_server --processes {threads} --guppy-timeout 1000.0 --outputs basecalls mappings
-            touch {output}
-            """
-
     # guppy basecalling
     rule guppy:
         input:
@@ -82,7 +59,8 @@ if config['do_basecalling']:
         resources:
             threads = lambda wildcards, threads: threads,
             mem_mb = lambda wildcards, threads, attempt: int((1.0 + (0.1 * (attempt - 1))) * (config['memory']['guppy_basecaller'][0] + config['memory']['guppy_basecaller'][1] * threads)),
-            time_min = lambda wildcards, threads, attempt: int((1440 / threads) * attempt * config['runtime']['guppy_basecaller']) # 90 min / 16 threads
+            time_min = lambda wildcards, threads, attempt: int((1440 / threads) * attempt * config['runtime']['guppy_basecaller']), # 90 min / 16 threads
+            gpu = 1
         params:
             guppy_config = lambda wildcards : '-c {cfg}{flags}'.format(
                                 cfg = config.get('basecalling_guppy_config') or 'dna_r9.4.1_450bps_fast.cfg',
