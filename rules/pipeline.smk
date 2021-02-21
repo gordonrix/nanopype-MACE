@@ -293,11 +293,20 @@ rule aligner_stats:
 
 if config['demux']:
 
-    checkpoint demultiplex:
+    rule generate_barcode_ref:
         input:
             'alignments/{tag}.bam'
         output:
-            'demux/{tag}_demultiplex_complete.txt'
+            temp('demux/{tag, [^\/_]*}_generate_barcode_ref_complete.txt')
+        script:
+            'utils/generate_barcode_ref.py'
+
+    checkpoint demultiplex:
+        input:
+            aln = 'alignments/{tag}.bam',
+            flag = 'demux/{tag}_generate_barcode_ref_complete.txt'
+        output:
+            temp('demux/{tag, [^\/_]*}_demultiplex_complete.txt')
         script:
             'utils/demux.py'
 
@@ -392,26 +401,6 @@ rule plot_mutations_distribution:
         'utils/plot_mutation_distribution.py'
 
 
-# I think samtools install needs to be modified to do this. See https://www.biostars.org/p/389132/
-# rule aligner_bam2cram:
-#     input:
-#         bam = "alignments/{tag}.bam",
-#         bai = "alignments/{tag}.bam.bai",
-#         reference = lambda wildcards: config['runs'][wildcards.tag]['reference']
-#     output:
-#         cram = "alignments/{tag}.cram",
-#         crai = "alignments/{tag}.cram.crai"
-#     shadow: "minimal"
-#     threads: 1
-#     resources:
-#         threads = lambda wildcards, threads: threads,
-#         mem_mb = lambda wildcards, attempt: int((1.0 + (0.2 * (attempt - 1))) * 5000)
-#     singularity:
-#         config['singularity_images']['alignment']
-#     shell:
-#         """
-#         {config[bin_singularity][samtools]} view -T {input.reference} -C {input.bam} | {config[bin_singularity][samtools]} sort -m 4G > {output.cram}
-#         {config[bin_singularity][samtools]} index {output.cram}
 #         """
 
 # ---------------------------------------------------------------------------------

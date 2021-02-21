@@ -354,10 +354,7 @@ onsuccess:
         log_name = print_log(status='SUCCESS')
         print("""
 Nanopype completed successfully.
-The log file was written to {}.
-
-If you use Nanopype in your research, please consider citing:
-Giesselmann, P. et al., Nanopype: a modular and scalable nanopore data processing pipeline. Bioinformatics, 2019.""".format(log_name), file=sys.stderr)
+The log file was written to {}.""".format(log_name), file=sys.stderr)
 
 
 onerror:

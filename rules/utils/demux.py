@@ -29,7 +29,7 @@ def main():
     ### Asign variables from config file and input
     config = snakemake.config
     tag = snakemake.wildcards.tag
-    BAMin = snakemake.input[0]
+    BAMin = snakemake.input.aln
 
     ### Output variables
     outputDir = str(snakemake.output).split(f'/{tag}_demultiplex_complete')[0]
@@ -50,6 +50,7 @@ class BarcodeParser:
         self.tag = tag
         self.refSeqfasta = config['runs'][tag]['reference']
         self.reference = list(SeqIO.parse(self.refSeqfasta, 'fasta'))[0]
+        self.reference.seq = self.reference.seq.upper()
         self.barcodeInfo = config['runs'][tag]['barcodeInfo']
         self.barcodeGroups = config['runs'][tag]['barcodeGroups']
 

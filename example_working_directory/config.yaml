@@ -1,11 +1,6 @@
 # Raw sequencing data parent directory containing one folder per flow cell, set if using .fast5 as input
 storage_data_raw : data
 
-# Type of input being used. If .fast5 files not used, set to base_called and place .fastq.gz file in the sequences/ directory
-# if .fast5 file used, set to 'raw' and place .fast5 files in /data/{run_name}/reads/ directory
-input_type: 'raw'
-
-
 # How to parse the folders found in 'storage_data_raw'. A 'reads' subfolder is
 # expected containing the batches of fast5 raw reads.
 # A runname pattern could be 20180101_FAH12345_FLO-MIN106_SQK-LSK109_WA01
@@ -24,16 +19,11 @@ storage_runname:
 threads_basecalling: 4
 threads_alignment: 3
 threads_samtools : 1
-threads_methylation: 4
-threads_sv: 4
 threads_demux: 4
-threads_transcript: 4
-threads_transcript_batch: 4
-threads_asm: 4
 
 
 # basecalling
-do_basecalling: False                # set to True if basecalling needs to be run
+do_basecalling: False                # set to True if basecalling needs to be run and data is provided as .fast5 files. Set to False if data has already been basecalled and is in the sequences folder
 # config file for guppy basecalling
 basecalling_guppy_config: 'dna_r9.4.1_450bps_hac.cfg'
 # quality qscore filter for guppy. 0 means all reads are written to the output
@@ -89,6 +79,7 @@ runs:
     templateDilutions:
         # list of folder names that hold raw data in a reads folder ( data/{runname}/reads/ ). Basecalls from each of these will be combined in a directory for this tag ( sequences/batches/{tag}/{runname}/ ).
         runname:
+            - 20210114_2207_MN35267_AFJ386_c4941675
             - 20210116_1641_MN35267_AFL239_42b6c1fa
         # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
         #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
@@ -98,8 +89,8 @@ runs:
 
         # required if UMI_consensus==True. regex patterns that used to identify UMIs. Specific to UMI tagging primers that are used. Both strands are queried and UMI that matches is appended to read name for use by `umi_tools group`. Even if only one UMI present, pattern should include the entire trimmed reference sequence.
         UMI_contexts:
-            - GNNNNTNNNNTNNNNA
-            - CNNNNANNNNANNNNANNNNC
+            - NNNNTNNNNTNNNN
+            - NNNNANNNNANNNNANNNN
 
         # # Sequence(s) to use for distinguishing forward and reverse orientations. For each, copy/paste subsequence from reference sequence that are present in forward and/or reverse primers and are distinct from the opposite orientation. Only necessary if consistent_orientation = False. Only one is necessary, but providing both forward and reverse will improve accuracy. Alignment of 10000 sequences for both forward and reverse sequences of length 8 takes ~7 seconds, and scales somewhat linear with sequence length, so be conservative if possible
         # orientation_alignment_sequence_f: GTATCGTG
@@ -111,7 +102,7 @@ runs:
 
         barcodeInfo: # different types of barcodes present within each sequence, defined by the sequence context around the barcode location
             fwd: 
-                context: NNNNNNG          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
+                context: CNNNNNNG          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
                 fasta: ref/barcodes_6_trimmed.fa
                 reverseComplement: False    # set to True if corresponding barcodes in fasta file are defined as 5' to 3'. Default, False.
                 hammingDistance: 1          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
@@ -120,10 +111,13 @@ runs:
                 fasta: ref/barcodes_6_trimmed.fa
                 reverseComplement: True
                 hammingDistance: 1
-            # lineage: # pre-encoded barcode, not added by primers. Uses a fasta file, with location defined by `fasta`, to identify barcodes. If the file does not already exist, it will first be created and filled with barcodes, and given names that include the number of sequences with each barcode
-            #     context: TGNNNNNNNNAA
-            #     fasta: ref/exampleBarcodes.fasta
-            #     reverseComplement: False
+            lineage:
+                context: NNNNNNNNNNNNNNNN
+                fasta: ref/barcodes_internal.fa
+                reverseComplement: False
+                hammingDistance: 3
+                generate: 2                 # automatically generates a fasta file with this number of barcodes if the fasta file does not already exist. Uses the `generate_barcode_ref.py` script.
+
         barcodeGroups:  # names demultiplexed files according to given name instead of using name(s) of individual barcodes. groups must use the same pattern of barcode types.
                         #   For instance, if one group contains barcode designations for two barcodes types (e.g., fwd and rvs), then all other groups must contain barcode designations for those two barcode types
             Y390-1000:
