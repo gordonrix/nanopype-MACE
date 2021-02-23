@@ -3,7 +3,8 @@ import os, sys, glob
 from rules.utils.get_file import get_sequence_batch
 from rules.utils.storage import get_flowcell, get_kit, get_ID
 # local rules
-localrules: basecaller_merge_tag
+if not config['merge_paired_end']:
+    localrules: basecaller_merge_tag
 
 # get batch of reads as IDs or fast5
 def get_signal_batch(wildcards, config):
@@ -70,8 +71,8 @@ if config['do_basecalling']:
             filtering = lambda wildcards : '--qscore_filtering --min_qscore {score}'.format(score = config['basecalling_guppy_qscore_filter']) if config['basecalling_guppy_qscore_filter'] > 0 else '',
             index = lambda wildcards : '--index ' + os.path.join(config['storage_data_raw'], wildcards.runname, 'reads.fofn') if get_signal_batch(wildcards, config).endswith('.txt') else '',
             mod_table = lambda wildcards, input, output : output[2] if len(output) == 3 else ''
-        singularity:
-            config['singularity_images']['basecalling']
+        # singularity:
+        #     config['singularity_images']['basecalling']
         shell:
             """
             mkdir -p raw
@@ -109,16 +110,32 @@ rule basecaller_stats:
         df = pd.DataFrame(fastq_iter(line_iter), columns=['length', 'quality'])
         df.to_hdf(output[0], 'stats')
 
-rule basecaller_merge_tag:
-    input:
-        lambda wildcards: get_batches_basecaller(wildcards)
-    output:
-        protected("sequences/{tag, [^\/_]*}.fastq.gz")
-    run:
-        with open(output[0], 'wb') as fp_out:
-            for f in input:
-                with open(f, 'rb') as fp_in:
-                    fp_out.write(fp_in.read())
+
+if config['merge_paired_end']:
+    rule merge_paired_end:
+        input:
+            fwd = lambda wildcards: os.path.join('sequences', 'paired', config['runs'][wildcards.tag]['fwdReads']),
+            rvs = lambda wildcards: os.path.join('sequences', 'paired', config['runs'][wildcards.tag]['rvsReads'])
+        output:
+            protected("sequences/{tag, [^\/_]*}.fastq.gz")
+        params:
+            flags = config['NGmerge_flags']
+        shell:
+            """
+            NGmerge -1 {input.fwd} -2 {input.rvs} -o {output} {params.flags}
+            """
+
+else:
+    rule basecaller_merge_tag: # combine batches of basecalled reads into a single file
+        input:
+            lambda wildcards: get_batches_basecaller(wildcards)
+        output:
+            protected("sequences/{tag, [^\/_]*}.fastq.gz")
+        run:
+            with open(output[0], 'wb') as fp_out:
+                for f in input:
+                    with open(f, 'rb') as fp_in:
+                        fp_out.write(fp_in.read())
 
 rule UMI_minimap2:
     input:
@@ -134,8 +151,8 @@ rule UMI_minimap2:
         time_min = lambda wildcards, threads, attempt: int((960 / threads) * attempt * config['runtime']['minimap2'])   # 60 min / 16 threads
     params:
         tempRef = lambda wildcards: wildcards.tag.split('.f')[0] + 'tempRef.fasta'
-    singularity:
-        config['singularity_images']['alignment']
+    # singularity:
+    #     config['singularity_images']['alignment']
     shell:
         """
         head -2 {input.reference} > {params.tempRef}
@@ -156,8 +173,8 @@ rule UMI_aligner_sam2bam:
     resources:
         threads = lambda wildcards, threads: threads,
         mem_mb = lambda wildcards, attempt: int((1.0 + (0.2 * (attempt - 1))) * 5000)
-    singularity:
-        config['singularity_images']['alignment']
+    # singularity:
+    #     config['singularity_images']['alignment']
     shell:
         """
         {config[bin_singularity][samtools]} view -b {input.sam} | {config[bin_singularity][samtools]} sort -m 4G > {output.bam}
@@ -245,8 +262,8 @@ rule minimap2:
         time_min = lambda wildcards, threads, attempt: int((960 / threads) * attempt * config['runtime']['minimap2'])   # 60 min / 16 threads
     params:
         tempRef = lambda wildcards: wildcards.tag.split('.f')[0] + 'tempRef.fasta'
-    singularity:
-        config['singularity_images']['alignment']
+    # singularity:
+    #     config['singularity_images']['alignment']
     shell:
         """
         head -2 {input.reference} > {params.tempRef}
@@ -267,8 +284,8 @@ rule aligner_sam2bam:
     resources:
         threads = lambda wildcards, threads: threads,
         mem_mb = lambda wildcards, attempt: int((1.0 + (0.2 * (attempt - 1))) * 5000)
-    singularity:
-        config['singularity_images']['alignment']
+    # singularity:
+    #     config['singularity_images']['alignment']
     shell:
         """
         {config[bin_singularity][samtools]} view -b {input.sam} | {config[bin_singularity][samtools]} sort -m 4G > {output.bam}
@@ -284,8 +301,8 @@ rule aligner_stats:
     threads: config.get('threads_samtools') or 1
     resources:
         threads = lambda wildcards, threads: threads,
-    singularity:
-        config['singularity_images']['alignment']
+    # singularity:
+    #     config['singularity_images']['alignment']
     shell:
         """
         while IFS= read -r bam_file; do {config[bin_singularity][samtools]} view ${{bam_file}}; done < {input} | {config[bin_singularity][python]} {config[sbin_singularity][alignment_stats.py]} {output}

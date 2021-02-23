@@ -55,7 +55,7 @@ def print_(*args, **kwargs):
         print(*args, **kwargs)
 
 
-# get pipeline version
+# get pipeline version # update for mace
 def get_tag():
     if 'TRAVIS_BRANCH' in os.environ and 'TRAVIS_TAG' in os.environ:
         version = os.environ.get('TRAVIS_TAG') or '-'
@@ -118,7 +118,7 @@ for tag in config['runs']:
         if not os.path.isfile(config['runs'][tag]['reference']):
             print_(f'[WARNING] Reference .fasta file for {refName} (given path: {config[refName]}) not found.', file=sys.stderr)
     else:
-        print_(f"[WARNING] No reference .fasta file provided for {tag} in config.yaml. The alignment and downstream tools will not work.", file=sys.stderr)
+        print_(f"[WARNING] No reference .fasta file provided for {tag} in config.yaml. Alignment and downstream tools will not work.", file=sys.stderr)
 
 
 # verify given binaries
@@ -129,7 +129,6 @@ if 'bin' in nanopype_env:
         config['bin_singularity'] = {}
     for name, loc in nanopype_env['bin'].items():
         loc_sys = None
-        #loc_singularity = os.path.join('/usr/bin', os.path.basename(loc))
         loc_singularity = os.path.basename(loc)
         if os.path.isfile(loc):
             # absolute path is given
@@ -187,15 +186,15 @@ else:
 # singularity_images:
 #     basecalling : '/path/to/local/basecalling.sif'
 # defaults:
-config['singularity_images'] = {module:
-    "docker://nanopype/{module}:{tag}".format(tag=config['version']['tag'], module=module) for module in
-    ['basecalling', 'alignment', 'methylation', 'transcript', 'assembly', 'sv', 'demux']}
-if 'singularity_images' in nanopype_env:
-    for module, container_path in nanopype_env['singularity_images'].items():
-        config['singularity_images'][module] = container_path
-        if not os.path.isfile(container_path):
-            print_("[WARNING] The container for {module} was overridden as {loc} but not found in the filesystem.".format(
-                module=module, loc=container_path), file=sys.stderr)
+# config['singularity_images'] = {module:
+#     "docker://nanopype/{module}:{tag}".format(tag=config['version']['tag'], module=module) for module in
+#     ['basecalling', 'alignment', 'methylation', 'transcript', 'assembly', 'sv', 'demux']}
+# if 'singularity_images' in nanopype_env:
+#     for module, container_path in nanopype_env['singularity_images'].items():
+#         config['singularity_images'][module] = container_path
+#         if not os.path.isfile(container_path):
+#             print_("[WARNING] The container for {module} was overridden as {loc} but not found in the filesystem.".format(
+#                 module=module, loc=container_path), file=sys.stderr)
 
 
 # locations of helper scripts in rules/utils
@@ -267,7 +266,6 @@ else:
                         print_(f"[WARNING] `do_basecalling` set to False, sequences file `{sequences}` not found, and basecalled sequence batch folder `{batch}` not found", file=sys.stderr)
 
 # ADD CHECKS FOR UMIS.
-#   - ensure both forward and reverse regexes only find a single match
 
 # ADD A CHECK FOR BARCODE INFO. If 'barcodeInfo' or 'barcodeGroups' is present in {tag}, both must be present and all barcode types in barcode groups
 # must be defined in 'barcodeInfo' dict. Probably did this in the beginning of the demux script, so can move that here.
@@ -322,7 +320,7 @@ def print_log(status='SUCCESS'):
     log_name = os.path.join('log', now.strftime('%Y%m%d_%H_%M_%S_%f.nanopype.log'))
     end_files = get_dir_files(workflow.workdir_init)
     with open(log_name, 'w') as fp:
-        print('Log file for Nanopype version {tag}'.format(tag=nanopype_tag), file=fp)
+        print('Log file for mace version {tag}'.format(tag=nanopype_tag), file=fp)
         print("Workflow begin: {}".format(start_time.strftime('%d.%m.%Y %H:%M:%S')), file=fp)
         print("Workflow end:   {}".format(now.strftime('%d.%m.%Y %H:%M:%S')), file=fp)
         print('Command: {}'.format(' '.join(sys.argv)), file=fp)
@@ -333,7 +331,7 @@ def print_log(status='SUCCESS'):
         print("Log file: {}".format(log_name), file=fp)
         print("Snakemake log file: {}".format(os.path.relpath(logger.logfile)), file=fp)
         print('', file=fp)
-        print("Nanopype config:", file=fp)
+        print("mace config:", file=fp)
         print('-----------------------------------', file=fp)
         print(yaml.dump({key:value for key, value in config.items()
             if not (isinstance(value, dict) or isinstance(value, list))}, indent=2, sort_keys=True), file=fp)
@@ -353,7 +351,7 @@ onsuccess:
     if workflow.mode == snakemake.common.Mode.default:
         log_name = print_log(status='SUCCESS')
         print("""
-Nanopype completed successfully.
+mace completed successfully.
 The log file was written to {}.""".format(log_name), file=sys.stderr)
 
 
@@ -361,16 +359,14 @@ onerror:
     if workflow.mode == snakemake.common.Mode.default:
         log_name = print_log(status='ERROR')
         print("""
-Nanopype exited with an error.
+mace exited with an error.
 The log file was written to {}.
 
-Please visit the documentation at
-    https://nanopype.readthedocs.io/
+Please visit the github at
+    https://github.com/gordonrix/mace
 to make sure everything is configured correctly.
 
-If you need further assistance, feel free to open an issue at
-    https://github.com/giesselmann/nanopype/issues
-and attach the above Snakemake and Nanopype log files.""".format(log_name), file=sys.stderr)
+""".format(log_name), file=sys.stderr)
 
 
 rule targets:

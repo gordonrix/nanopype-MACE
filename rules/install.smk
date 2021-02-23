@@ -261,6 +261,22 @@ rule guppy:
         rm -r *
         """
 
+rule NGmerge:
+    output:
+        bin = "bin/NGmerge"
+    threads: config['threads_build']
+    shell:
+        """
+        mkdir -p src && cd src
+        if [ ! -d NGmerge ]; then
+            git clone https://github.com/harvardinformatics/NGmerge --branch v0.3 --depth=1 && cd NGmerge
+        else
+            cd NGmerge && git fetch --all --tags --prune && git checkout tags/v0.3
+        fi
+        make clean && make -j{threads}
+        cp NGmerge ../../{output.bin}
+        """
+
 rule UCSCtools:
     output:
         "bin/bedGraphToBigWig"

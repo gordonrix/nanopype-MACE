@@ -23,13 +23,17 @@ threads_demux: 4
 
 
 # basecalling
-do_basecalling: False                # set to True if basecalling needs to be run and data is provided as .fast5 files. Set to False if data has already been basecalled and is in the sequences folder
+do_basecalling: False                # set to True if basecalling needs to be run and data is provided as .fast5 files, in directories that are named in all run tags. Set to False if data has already been basecalled and is in the sequences folder.
 # config file for guppy basecalling
 basecalling_guppy_config: 'dna_r9.4.1_450bps_hac.cfg'
 # quality qscore filter for guppy. 0 means all reads are written to the output
 basecalling_guppy_qscore_filter: 0
 # command line flags directly passed to guppy
 basecalling_guppy_flags: '-x cuda:0'
+
+# read merging
+merge_paired_end: True            # set to True if merging of paired end reads is needed, and paired end read filenames are provided for all run tags
+NGmerge_flags: '-z'                   # command line flags to add to NGmerge command. Examine NGmerge documentation for usage if amplicons are shorter than both mates of a paired end read
 
 # UMI clustering and consensus
 UMI_consensus: True
@@ -40,7 +44,6 @@ UMI_consensus_threshold: 2  # minimum required number of reads with a particular
 # alignment flags for samtools e.g. -F 2304 for RNA alignment
 alignment_samtools_flags: ''
 # command line flags for minimap2 DNA alignment
-## alignment_minimap2_flags: '-ax map-ont -L'                                              # default options, optimized for alignment to genome
 alignment_minimap2_flags: '-a -A2 -B4 -O12 -E4 --secondary=no --end-bonus=15'   # options good for targeted sequencing, minimizes gaps. Use --for-only flag to align to only the forward read of the reference sequence if all reads are already in the correct alignment.
 # command line flags for graphmap2
 alignment_graphmap2_flags: '-B 100'
@@ -48,7 +51,7 @@ alignment_graphmap2_flags: '-B 100'
 alignment_ngmlr_flags: '-x ont --bam-fix'
 
 
-# demux
+# demultiplexing
 demux: True
 demux_threshold: 10  # count threshold for carrying through to subsequent rules. A demultiplexed file must contain at least this many sequences for further processing
 
@@ -70,42 +73,41 @@ mutations_aggregated_Yaxis_absolute: False                 # display raw mutatio
 
 # plot_mut_spectrum
     # barcode group name to be used as the background for calculating the mutation spectrum
-    #   to use, this barcode group name must be present within all samples being analyzed
+    #   to use, this barcode group name must be present within all sample tags being analyzed
 # background: Y390-1000
 
-# runs to be analyzed
+# runs to be analyzed, organized into separate run tags
 runs:
-
-    templateDilutions:
-        # list of folder names that hold raw data in a reads folder ( data/{runname}/reads/ ). Basecalls from each of these will be combined in a directory for this tag ( sequences/batches/{tag}/{runname}/ ).
+    
+    new: # `tag` that describes the sequencing data being analyzed. applied to filenames for pipeline outputs 
+        # for .fast5 input. list of folder names that hold raw fast5 data in a reads directory ( {storage_data_raw}/{runname}/reads/ ). After basecalling, fastq files from each of these will be combined in a directory for this tag ( sequences/batches/{tag}/{runname}/ ).
+        #   If using .fast5 input, must set `do_basecalling` to True, and paired end inputs must be removed
         runname:
             - 20210114_2207_MN35267_AFJ386_c4941675
             - 20210116_1641_MN35267_AFL239_42b6c1fa
-        # fasta file that contains reference sequence in two forms: first is with barcode and UMI locations present, but marked by 'N's,
-        #   second is trimmed such that each base is one for which analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
-        #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of mutations/sequence, etc.
-        #   Third sequence is optional, see `auto_detect_longest_ORF`
+
+        # filenames for paired end sequencing input. Must be located in sequences/paired directory. If using paired end input, `merge_paired_end` must be set to True and .fast5 inputs must be removed
+        fwdReads: P0_R1_001.fastq.gz
+        rvsReads: P0_R2_001.fastq.gz
+
+        # fasta file that contains reference sequence in two or three forms: first is with barcode and UMI locations present, but marked by 'N's. This sequence is what each read will actually be aligned to
+        #   second is trimmed such that each base is one for which mutation analysis is desired. For amplicon sequencing, this likely means only bases that were PCR amplified,
+        #   as bases that are present in primers are likely not informative and will slightly obscure evaluation of certain results such as mutations per base, etc.
+        #   Third sequence is the protein sequence to be analyzed, and is optional if the complete ORF is present in each read, see `auto_detect_longest_ORF`
         reference: ref/testTrpB.fasta
 
-        # required if UMI_consensus==True. regex patterns that used to identify UMIs. Specific to UMI tagging primers that are used. Both strands are queried and UMI that matches is appended to read name for use by `umi_tools group`. Even if only one UMI present, pattern should include the entire trimmed reference sequence.
+        # required if UMI_consensus==True. Copy and paste from reference fasta sequence. First N and last N will be used to identify UMIs within each sequence.
         UMI_contexts:
             - NNNNTNNNNTNNNN
             - NNNNANNNNANNNNANNNN
 
-        # # Sequence(s) to use for distinguishing forward and reverse orientations. For each, copy/paste subsequence from reference sequence that are present in forward and/or reverse primers and are distinct from the opposite orientation. Only necessary if consistent_orientation = False. Only one is necessary, but providing both forward and reverse will improve accuracy. Alignment of 10000 sequences for both forward and reverse sequences of length 8 takes ~7 seconds, and scales somewhat linear with sequence length, so be conservative if possible
-        # orientation_alignment_sequence_f: GTATCGTG
-        # orientation_alignment_sequence_r: CGATCACT
-
-        # list barcode types to be used for demuxing. Demux'd files are named according to these barcodes in the order provided
-        #   if (1) both sequence context and fasta files are provided, (2) context can be found within the reference sequence,
-        #   and (3) the fasta file can be located
-
+        # list barcode types to be used for demultiplexing. Demux'd files are named according to these barcodes in the order provided
         barcodeInfo: # different types of barcodes present within each sequence, defined by the sequence context around the barcode location
             fwd: 
-                context: CNNNNNNG          # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to mismatches
-                fasta: ref/barcodes_6_trimmed.fa
-                reverseComplement: False    # set to True if corresponding barcodes in fasta file are defined as 5' to 3'. Default, False.
-                hammingDistance: 1          # allowable hamming distance from true barcode. If any two of barcodes within provided fasta file are within this hamming distance from each other, demultiplexing will fail
+                context: CNNNNNNG                   # copy and paste from reference fasta sequence. Include just enough sequence on one or both sides to distinguish from other barcodes, more than is necessary will result in more barcodes being ignored due to indels
+                fasta: ref/barcodes_6_trimmed.fa    # fasta file 
+                reverseComplement: False            # set to True if corresponding barcodes in fasta file are defined as 5' to 3'. Default, False.
+                hammingDistance: 1                  # maximum hamming distance from barcode in fasta file to increase leniency in barcode identification. If any two of barcodes within provided fasta file are within this hamming distance from each other, throws an error
             rvs:
                 context: TNNNNNN  
                 fasta: ref/barcodes_6_trimmed.fa
